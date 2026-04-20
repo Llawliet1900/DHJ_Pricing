@@ -1,5 +1,5 @@
 import { useStore } from '../store';
-import { PctInput, TextInput } from '../components/Inputs';
+import { NumInput, PctInput, TextInput } from '../components/Inputs';
 import { fmtPct, weightedPlatformFee } from '../engine';
 
 export default function RatiosPage() {
@@ -39,6 +39,34 @@ export default function RatiosPage() {
         <Row label="营销费用（占 GMV）" desc="按 GMV 百分比扣除（不再按利润计）">
           <PctInput value={ratios.marketingOfGmv} onChange={(v) => updateRatios({ marketingOfGmv: v })} />
         </Row>
+      </div>
+
+      {/* 生豆默认单价 */}
+      <div className="card p-4">
+        <div className="font-medium mb-1">🫘 生豆默认单价（仅作为"新建豆款"的默认值）</div>
+        <div className="text-xs text-slate-500 mb-3">
+          每款豆子的实际生豆单价在「豆子配方」Tab 里单独设置，这里的值只在你点"+ 添加豆款"时作为初始值带入。
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Row label="拼配默认单价" desc="元/kg">
+            <NumInput
+              value={ratios.greenPriceBlendDefault ?? 120}
+              step={5}
+              digits={2}
+              min={0}
+              onChange={(v) => updateRatios({ greenPriceBlendDefault: v })}
+            />
+          </Row>
+          <Row label="SOE 默认单价" desc="元/kg">
+            <NumInput
+              value={ratios.greenPriceSoeDefault ?? 150}
+              step={5}
+              digits={2}
+              min={0}
+              onChange={(v) => updateRatios({ greenPriceSoeDefault: v })}
+            />
+          </Row>
+        </div>
       </div>
 
       {/* 生豆用量校验 */}

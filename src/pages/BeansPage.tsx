@@ -2,12 +2,12 @@ import { useStore } from '../store';
 import { Checkbox, NumInput, PctInput, Select, TextInput } from '../components/Inputs';
 import type { Bean, BeanVariant } from '../types';
 import {
-  annualOperationCost,
-  capacityKgPerYear,
   fmtCNY,
   fmtPct,
+  impliedMargin,
   packCost,
   suggestedPrice,
+  variantLabel,
   weightedPlatformFee,
 } from '../engine';
 
@@ -21,8 +21,8 @@ export default function BeansPage() {
         <div>
           <h2 className="text-xl font-semibold">豆子配方</h2>
           <p className="text-sm text-slate-500 mt-1">
-            每款豆子独立设置：使用的生豆、包装件组合、规格（110g / 225g / 其他）、目标毛利率。
-            下面会实时展示每包成本明细和建议售价。
+            每款豆子独立设置：生豆单价、包装件组合、规格（可自定义任意克重/SKU）、目标毛利率。
+            规格支持"按目标毛利推售价"和"按售价反推毛利"两种模式，逐行切换。
           </p>
         </div>
         <button className="dhj dhj-primary" onClick={addBean}>+ 添加豆款</button>
@@ -43,17 +43,12 @@ function BeanCard({ bean }: { bean: Bean }) {
   const addVariant = useStore((s) => s.addVariant);
   const updateVariant = useStore((s) => s.updateVariant);
   const deleteVariant = useStore((s) => s.deleteVariant);
-
-  const rawOptions = state.costItems
-    .filter((c) => c.category === 'raw')
-    .map((c) => ({ value: c.id, label: `${c.name} (${c.unitPrice}${c.unit})` }));
+  const duplicateVariant = useStore((s) => s.duplicateVariant);
 
   const packagingCatalog = state.costItems.filter((c) => c.category === 'packaging');
   const platformFee = weightedPlatformFee(state.platforms);
   const marketingShare = state.ratios.marketingOfGmv;
 
-  // 运营成本单位分摊的估计（按当前盈利总览设置）：这里在卡片里只展示"每包生产成本"
-  // 运营分摊依赖销量结构，需要在盈利页统一算
   return (
     <div className="card p-4 space-y-3">
       {/* 头部 */}
@@ -70,13 +65,16 @@ function BeanCard({ bean }: { bean: Bean }) {
           className="max-w-[120px]"
         />
         <div className="flex items-center gap-1">
-          <span className="text-xs text-slate-500">生豆</span>
-          <Select
-            value={bean.rawCostItemId}
-            onChange={(v) => update(bean.id, { rawCostItemId: v })}
-            options={rawOptions}
-            className="max-w-[220px]"
+          <span className="text-xs text-slate-500">生豆单价</span>
+          <NumInput
+            value={bean.greenPricePerKg}
+            step={5}
+            digits={2}
+            min={0}
+            onChange={(v) => update(bean.id, { greenPricePerKg: v })}
+            className="max-w-[100px]"
           />
+          <span className="text-xs text-slate-500">元/kg</span>
         </div>
         <div className="flex items-center gap-1">
           <span className="text-xs text-slate-500">目标毛利率</span>
@@ -88,9 +86,14 @@ function BeanCard({ bean }: { bean: Bean }) {
       </div>
 
       {/* 包装组合 */}
-      <div>
-        <div className="text-sm font-medium mb-1">包装件组合（默认使用，variant 可单独覆盖）</div>
-        <table className="dhj">
+      <details className="group">
+        <summary className="cursor-pointer text-sm font-medium select-none">
+          📦 包装件组合（默认用于所有规格，可折叠）
+          <span className="text-xs text-slate-400 ml-2">
+            当前共 {bean.packaging.length} 件，合计 {fmtCNY(sumPackagingCost(bean, state.costItems))}
+          </span>
+        </summary>
+        <table className="dhj mt-2">
           <thead>
             <tr>
               <th className="w-10">选</th>
@@ -140,35 +143,45 @@ function BeanCard({ bean }: { bean: Bean }) {
             })}
           </tbody>
         </table>
-      </div>
+      </details>
 
       {/* 规格 / variants */}
       <div>
         <div className="flex items-center justify-between mb-1">
-          <div className="text-sm font-medium">规格（熟豆克重）+ 成本定价</div>
-          <button className="dhj dhj-ghost text-xs" onClick={() => addVariant(bean.id, 110)}>+ 添加规格</button>
+          <div className="text-sm font-medium">规格 SKU</div>
+          <button className="dhj dhj-ghost text-xs" onClick={() => addVariant(bean.id)}>+ 添加规格</button>
         </div>
         <table className="dhj">
           <thead>
             <tr>
-              <th className="w-24">熟豆克重</th>
-              <th className="w-28">本款内占比</th>
-              <th className="w-32">生豆用量</th>
-              <th className="w-28">生豆成本</th>
-              <th className="w-28">包装成本</th>
-              <th className="w-28">物流</th>
-              <th className="w-32">生产成本(含损)</th>
-              <th className="w-28">建议售价</th>
-              <th className="w-36">扣平台/营销后净收入</th>
-              <th className="w-28">每包净利</th>
-              <th className="w-16">操作</th>
+              <th className="w-28">规格名</th>
+              <th className="w-20">熟豆(g)</th>
+              <th className="w-24">本款占比</th>
+              <th className="w-28">生豆用量</th>
+              <th className="w-24">生豆成本</th>
+              <th className="w-24">包装</th>
+              <th className="w-20">物流</th>
+              <th className="w-28">生产成本</th>
+              <th className="w-28">定价模式</th>
+              <th className="w-28">售价</th>
+              <th className="w-24">实际毛利</th>
+              <th className="w-24">每包净利</th>
+              <th className="w-24">操作</th>
             </tr>
           </thead>
           <tbody>
-            {bean.variants.map((v) => <VariantRow key={v.id} bean={bean} variant={v}
-              platformFee={platformFee} marketingShare={marketingShare}
-              onUpdate={(p) => updateVariant(bean.id, v.id, p)}
-              onDelete={() => deleteVariant(bean.id, v.id)} />)}
+            {bean.variants.map((v) => (
+              <VariantRow
+                key={v.id}
+                bean={bean}
+                variant={v}
+                platformFee={platformFee}
+                marketingShare={marketingShare}
+                onUpdate={(p) => updateVariant(bean.id, v.id, p)}
+                onDelete={() => deleteVariant(bean.id, v.id)}
+                onDuplicate={() => duplicateVariant(bean.id, v.id)}
+              />
+            ))}
           </tbody>
         </table>
         <VariantShareSum bean={bean} />
@@ -178,20 +191,38 @@ function BeanCard({ bean }: { bean: Bean }) {
 }
 
 function VariantRow({
-  bean, variant, platformFee, marketingShare, onUpdate, onDelete,
+  bean, variant, platformFee, marketingShare, onUpdate, onDelete, onDuplicate,
 }: {
-  bean: Bean; variant: BeanVariant; platformFee: number; marketingShare: number;
-  onUpdate: (p: Partial<BeanVariant>) => void; onDelete: () => void;
+  bean: Bean;
+  variant: BeanVariant;
+  platformFee: number;
+  marketingShare: number;
+  onUpdate: (p: Partial<BeanVariant>) => void;
+  onDelete: () => void;
+  onDuplicate: () => void;
 }) {
   const state = useStore();
   const pc = packCost(state, bean, variant);
-  const price = suggestedPrice(pc.productionCost, bean.targetMargin, platformFee, marketingShare);
-  // 扣除平台和营销后实收
-  const netRevenuePerPack = price * (1 - platformFee - marketingShare - state.ratios.returnRate);
-  const profitPerPack = netRevenuePerPack - pc.productionCost;
+
+  const suggested = suggestedPrice(pc.productionCost, bean.targetMargin, platformFee, marketingShare);
+  const isManual = !!variant.manualPrice;
+  const price = isManual ? (variant.manualPriceValue ?? 0) : suggested;
+  const actualMargin = isManual
+    ? impliedMargin(price, pc.productionCost, platformFee, marketingShare)
+    : bean.targetMargin;
+
+  // 每包净利 = 售价 × (1 - 平台 - 营销 - 退货) - 生产成本
+  const profitPerPack = price * (1 - platformFee - marketingShare - state.ratios.returnRate) - pc.productionCost;
 
   return (
     <tr>
+      <td>
+        <TextInput
+          value={variant.label ?? variantLabel(variant)}
+          onChange={(v) => onUpdate({ label: v })}
+          className="max-w-[110px]"
+        />
+      </td>
       <td>
         <NumInput value={variant.weightG} step={5} digits={0} min={1}
           onChange={(v) => onUpdate({ weightG: v })} />
@@ -199,18 +230,51 @@ function VariantRow({
       <td>
         <PctInput value={variant.shareInBean} onChange={(v) => onUpdate({ shareInBean: v })} />
       </td>
-      <td>{pc.rawGramsPerPack.toFixed(2)} g</td>
+      <td className="text-slate-600">{pc.rawGramsPerPack.toFixed(1)} g</td>
       <td>{fmtCNY(pc.rawCost)}</td>
       <td title={pc.packagingDetails.map((d) => `${d.name}×${d.qty}=${d.subtotal.toFixed(2)}`).join('\n')}>
         {fmtCNY(pc.packagingCost)}
       </td>
       <td>{fmtCNY(pc.logisticsCost)}</td>
       <td className="font-semibold">{fmtCNY(pc.productionCost)}</td>
-      <td className="text-blue-600 font-semibold">{fmtCNY(price)}</td>
-      <td>{fmtCNY(netRevenuePerPack)}</td>
+      <td>
+        <label className="flex items-center gap-1 text-xs">
+          <input
+            type="checkbox"
+            checked={isManual}
+            onChange={(e) => {
+              const on = e.target.checked;
+              onUpdate({
+                manualPrice: on,
+                manualPriceValue: on ? (variant.manualPriceValue ?? Math.round(suggested)) : variant.manualPriceValue,
+              });
+            }}
+          />
+          <span>{isManual ? '手动' : '目标毛利'}</span>
+        </label>
+      </td>
+      <td>
+        {isManual ? (
+          <NumInput
+            value={variant.manualPriceValue ?? 0}
+            step={1}
+            digits={2}
+            min={0}
+            onChange={(v) => onUpdate({ manualPriceValue: v })}
+          />
+        ) : (
+          <span className="text-blue-600 font-semibold">{fmtCNY(suggested)}</span>
+        )}
+      </td>
+      <td className={actualMargin >= 0 ? 'text-slate-700' : 'text-rose-600'}>
+        {Number.isFinite(actualMargin) ? fmtPct(actualMargin) : '—'}
+      </td>
       <td className={profitPerPack >= 0 ? 'text-emerald-600' : 'text-rose-600'}>{fmtCNY(profitPerPack)}</td>
       <td>
-        <button className="dhj dhj-danger text-xs" onClick={onDelete}>×</button>
+        <div className="flex gap-1">
+          <button className="dhj dhj-ghost text-xs" onClick={onDuplicate} title="复制此规格">复制</button>
+          <button className="dhj dhj-danger text-xs" onClick={onDelete} title="删除">×</button>
+        </div>
       </td>
     </tr>
   );
@@ -222,18 +286,14 @@ function VariantShareSum({ bean }: { bean: Bean }) {
   const ok = Math.abs(sum - 1) < 0.001;
   return (
     <div className={`text-xs mt-1 ${ok ? 'text-emerald-600' : 'text-amber-600'}`}>
-      本款内规格占比合计：{fmtPct(sum)}{!ok && '（非 100%，实际计算时会自动归一化）'}
+      本款内规格占比合计：{fmtPct(sum)}{!ok && '（非 100%，计算时会自动归一化）'}
     </div>
   );
 }
 
-// 当前产能下的总 kg（作为展示提示）— 留给盈利页用
-export function annualKgForCurrentScenario(state = useStore.getState()) {
-  const sc = state.scenarios.find((x) => x.id === state.profitInputs.scenarioId);
-  if (!sc) return 0;
-  return capacityKgPerYear(sc);
-}
-
-export function _opsUsed() {
-  return annualOperationCost(useStore.getState()).total;
+function sumPackagingCost(bean: Bean, costItems: { id: string; unitPrice: number }[]): number {
+  return bean.packaging.reduce((s, p) => {
+    const ci = costItems.find((c) => c.id === p.costItemId);
+    return s + (ci?.unitPrice ?? 0) * p.qty;
+  }, 0);
 }

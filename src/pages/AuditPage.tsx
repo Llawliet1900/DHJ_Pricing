@@ -5,9 +5,11 @@ import {
   fmtCNY,
   fmtNum,
   fmtPct,
+  impliedMargin,
   packCost,
   rawGramsPerPack,
-  suggestedPrice,
+  resolveVariantPricing,
+  variantLabel,
   weightedPlatformFee,
 } from '../engine';
 
@@ -128,42 +130,55 @@ export default function AuditPage() {
       </Section>
 
       {/* 5. 每包成本与售价 */}
-      <Section title="5. 每包生产成本 + 建议售价（按当前各豆款）">
+      <Section title="5. 每包生产成本 + 售价（按当前各豆款 / SKU）">
         <Formula>
+          生豆成本 = 生豆用量(g) ÷ 1000 × 该豆款生豆单价(元/kg) <br />
           生产成本 = (生豆成本 + 包装成本) × (1 + 包装损耗) + 物流 <br />
-          建议售价 = 生产成本 / (1 − 目标毛利 − 加权平台抽成 − 营销/GMV)
+          建议售价（目标毛利模式）= 生产成本 / (1 − 目标毛利 − 加权平台抽成 − 营销/GMV) <br />
+          实际毛利（手动定价模式）= 1 − 平台抽成 − 营销/GMV − 生产成本 / 实际售价
         </Formula>
         <div className="text-xs text-slate-500 mt-1">
-          这样定价保证：扣除平台和营销后，毛利率正好等于 "目标毛利"。
+          目标毛利模式下，扣除平台和营销后的毛利率正好等于"目标毛利"。手动定价模式直接取用户输入的售价并反推实际毛利率。
         </div>
         <table className="dhj mt-2">
           <thead>
             <tr>
               <th>豆款 / 规格</th>
+              <th>生豆单价</th>
               <th>生豆(g)</th>
               <th>生豆成本</th>
               <th>包装</th>
               <th>物流</th>
               <th>生产成本</th>
-              <th>目标毛利</th>
-              <th>建议售价</th>
+              <th>模式</th>
+              <th>售价</th>
+              <th>实际毛利</th>
             </tr>
           </thead>
           <tbody>
             {state.beans.flatMap((b) =>
               b.variants.map((v) => {
                 const pc = packCost(state, b, v);
-                const price = suggestedPrice(pc.productionCost, b.targetMargin, fee, r.marketingOfGmv);
+                const pricing = resolveVariantPricing(v, pc.productionCost, b, fee, r.marketingOfGmv);
+                const margin = pricing.isManual
+                  ? impliedMargin(pricing.price, pc.productionCost, fee, r.marketingOfGmv)
+                  : b.targetMargin;
                 return (
                   <tr key={`${b.id}_${v.id}`}>
-                    <td>{b.name} / {v.weightG}g</td>
+                    <td>{b.name} / {variantLabel(v)}</td>
+                    <td>{fmtCNY(b.greenPricePerKg)}/kg</td>
                     <td>{pc.rawGramsPerPack.toFixed(1)}</td>
                     <td>{fmtCNY(pc.rawCost)}</td>
                     <td>{fmtCNY(pc.packagingCost)}</td>
                     <td>{fmtCNY(pc.logisticsCost)}</td>
                     <td>{fmtCNY(pc.productionCost)}</td>
-                    <td>{fmtPct(b.targetMargin)}</td>
-                    <td className="text-blue-600 font-medium">{fmtCNY(price)}</td>
+                    <td className={pricing.isManual ? 'text-amber-600' : 'text-slate-500'}>
+                      {pricing.isManual ? '手动' : '目标毛利'}
+                    </td>
+                    <td className="text-blue-600 font-medium">{fmtCNY(pricing.price)}</td>
+                    <td className={margin >= 0 ? 'text-slate-700' : 'text-rose-600'}>
+                      {Number.isFinite(margin) ? fmtPct(margin) : '—'}
+                    </td>
                   </tr>
                 );
               })

@@ -33,6 +33,9 @@ export interface Ratios {
   lossPack: number;      // 包装损耗（默认 0.05）
   returnRate: number;    // 退货/破损率（默认 0.01）
   marketingOfGmv: number;// 营销费用占 GMV 比例（默认 0.20）
+  // 仅作为"新建豆子"时的默认生豆单价参考
+  greenPriceBlendDefault?: number; // 拼配生豆默认单价
+  greenPriceSoeDefault?: number;   // SOE 生豆默认单价
 }
 
 export interface PlatformRow {
@@ -52,7 +55,7 @@ export interface CapacityScenario {
 }
 
 // ============= 豆子 =============
-// 一款豆子下有多个规格（110g / 225g）
+// 一款豆子下有多个规格（110g / 225g / 自定义）
 export interface BeanPackaging {
   costItemId: string;  // 对应 CostItem.id（category=packaging）
   qty: number;         // 用量
@@ -60,18 +63,28 @@ export interface BeanPackaging {
 
 export interface BeanVariant {
   id: string;
-  weightG: number;     // 熟豆克重（如 110 / 225）
+  label?: string;      // 规格名（可选，如 "110g"、"225g"、"1kg"）；空则按克重显示
+  weightG: number;     // 熟豆克重
   // 该规格使用的包装组合（默认继承 bean 级别，也可单独覆盖）
   packagingOverride?: BeanPackaging[];
   logisticsCostItemId?: string; // 默认取全局快递费
   shareInBean: number; // 该规格在本款豆子内的销量占比（0-1），同一 bean 下合计需 =1
+
+  // 手动定价（反向定价）：
+  //   manualPrice = true 时，使用 manualPriceValue 作为售价；
+  //   实际毛利率 = 1 - platformFee - marketing/GMV - 生产成本/售价
+  manualPrice?: boolean;
+  manualPriceValue?: number;
 }
 
 export interface Bean {
   id: string;
   name: string;              // 九尾 / 朏胐 / 精卫 / 鸾鸟
   type: 'blend' | 'soe';     // 拼配 / 单品
-  rawCostItemId: string;     // 对应 CostItem.id（category=raw）
+  // 生豆价：每款豆子独立维护（元/kg）
+  greenPricePerKg: number;
+  // rawCostItemId 保留用于兼容/引用（比如"分类名称"），但价格以 greenPricePerKg 为准
+  rawCostItemId?: string;
   // 默认包装组合（被 variants 继承，除非 variant 覆盖）
   packaging: BeanPackaging[];
   variants: BeanVariant[];

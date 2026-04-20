@@ -21,6 +21,11 @@ export function getCostItem(state: AppState, id: string | undefined | null): Cos
   return state.costItems.find((c) => c.id === id);
 }
 
+/** 规格显示名（label > weightG） */
+export function variantLabel(v: BeanVariant): string {
+  return v.label?.trim() ? v.label.trim() : `${v.weightG}g`;
+}
+
 // ==================== 产能 ====================
 
 /** 年产能 (kg 熟豆) = 每周工时 × 每小时产出(kg) × 每年工作周数 */
@@ -78,9 +83,13 @@ export function rawGramsPerPack(weightG: number, r: Ratios): number {
 
 export function packCost(state: AppState, bean: Bean, variant: BeanVariant): PackCostBreakdown {
   const r = state.ratios;
-  const raw = getCostItem(state, bean.rawCostItemId);
+  // 生豆价：优先使用 bean.greenPricePerKg；如果 0 且有 rawCostItemId 就 fallback 到成本项
+  let greenPrice = bean.greenPricePerKg;
+  if ((!greenPrice || greenPrice <= 0) && bean.rawCostItemId) {
+    greenPrice = getCostItem(state, bean.rawCostItemId)?.unitPrice ?? 0;
+  }
   const rawGrams = rawGramsPerPack(variant.weightG, r);
-  const rawCost = raw ? (rawGrams / 1000) * raw.unitPrice : 0;
+  const rawCost = (rawGrams / 1000) * greenPrice;
 
   const pkgList = variant.packagingOverride ?? bean.packaging;
   const packagingDetails = pkgList.map((p) => {
@@ -113,21 +122,52 @@ export function packCost(state: AppState, bean: Bean, variant: BeanVariant): Pac
 // ==================== 定价 ====================
 
 /**
- * 目标售价推导：
+ * 正向定价：给定目标毛利率，推导售价
+ *
  *   售价 × (1 − 平台抽成 − 营销占GMV) − 生产成本 = 售价 × 目标毛利
- * 整理：
- *   售价 = 生产成本 / (1 − m − p − s)
+ *   => 售价 = 生产成本 / (1 − m − p − s)
  *
- *   其中 m = 目标毛利率, p = 加权平台抽成率, s = 营销/GMV
+ * 其中 m = 目标毛利率, p = 加权平台抽成率, s = 营销/GMV
  * 保证：扣除平台与营销后，毛利率正好是 m
- *
- * 注意：这里的"生产成本"包含了物流；运营成本分摊在 profit 页面另算，
- * 因为分摊依赖销量结构。这里的售价 = 每包"单位毛利"是 m × price。
  */
 export function suggestedPrice(productionCost: number, margin: number, platformFee: number, marketingShare: number): number {
   const denom = 1 - margin - platformFee - marketingShare;
   if (denom <= 0) return Infinity;
   return productionCost / denom;
+}
+
+/**
+ * 反向定价：给定售价，反推实际毛利率
+ *
+ *   实际毛利率 = 1 − 平台抽成 − 营销/GMV − 生产成本/售价
+ *
+ * 注意：这里的"毛利率"口径与 suggestedPrice 一致 —— 指的是"扣掉平台和营销后剩下的毛利 / 售价"。
+ * 如果实际毛利率 < 0，说明这个售价连平台 + 营销 + 生产成本都覆盖不了。
+ */
+export function impliedMargin(price: number, productionCost: number, platformFee: number, marketingShare: number): number {
+  if (!Number.isFinite(price) || price <= 0) return NaN;
+  return 1 - platformFee - marketingShare - productionCost / price;
+}
+
+/**
+ * 根据 variant 的手动定价开关，返回 { price, margin, isManual } —— 算 GMV/净利润时统一入口
+ */
+export function resolveVariantPricing(
+  variant: BeanVariant,
+  productionCost: number,
+  bean: Bean,
+  platformFee: number,
+  marketingShare: number,
+  globalMargin?: number,
+): { price: number; margin: number; isManual: boolean } {
+  if (variant.manualPrice && Number.isFinite(variant.manualPriceValue) && (variant.manualPriceValue ?? 0) > 0) {
+    const price = variant.manualPriceValue as number;
+    const margin = impliedMargin(price, productionCost, platformFee, marketingShare);
+    return { price, margin, isManual: true };
+  }
+  const margin = globalMargin ?? bean.targetMargin;
+  const price = suggestedPrice(productionCost, margin, platformFee, marketingShare);
+  return { price, margin, isManual: false };
 }
 
 // ==================== 盈利总览（按年） ====================
@@ -136,11 +176,14 @@ export interface VariantYearStats {
   beanId: string;
   variantId: string;
   beanName: string;
+  variantLabel: string;
   weightG: number;
   annualKg: number;         // 本 variant 年销量 (kg)
   annualPacks: number;      // 本 variant 年销量 (包)
   productionCost: number;   // 单包生产成本（含损耗+物流）
-  price: number;            // 建议售价（含平台抽成/营销覆盖）
+  price: number;            // 售价（手动 or 建议）
+  margin: number;           // 实际/目标毛利率
+  isManualPrice: boolean;   // 是否手动定价
   gmv: number;              // 年 GMV = 包数 × 售价
   productionTotal: number;  // 年生产成本
   opsAllocated: number;     // 运营成本分摊
@@ -171,9 +214,7 @@ export interface ProfitSummary {
     kgPerMonth: number;
     gmvPerYear: number;
     gmvPerMonth: number;
-    // 每 kg 的"贡献边际"
     contributionPerKg: number;
-    // 固定成本（= 年度运营总成本）
     fixedCost: number;
   };
 }
@@ -187,15 +228,10 @@ export interface ProfitSummary {
  *  3) 每款豆子按 variants 内 shareInBean 分配到每个规格（kg）
  *  4) 规格 kg → 规格包数 = kg × 1000 / 克重
  *  5) 每包成本 = productionCost (含损耗+物流)
- *  6) 售价 = 生产成本 / (1 − margin − platformFee − marketing/GMV)
+ *  6) 售价：手动定价时用 variant.manualPriceValue；否则 = 生产成本 / (1 − margin − platformFee − marketing/GMV)
  *  7) 运营成本按"规格 kg 占比"分摊
  *  8) 退货/破损按 GMV × returnRate 计提
  *  9) 净利润 = GMV − 生产成本 − 运营分摊 − 平台抽成 − 营销 − 退货
- *
- * Break-even：
- *   对每个规格定义"贡献边际率" = 1 − 生产成本/售价 − platformFee − marketingShare − returnRate
- *   整体贡献边际按 kg 加权（更直观）
- *   breakeven_kg = 固定成本 / (单位 kg 贡献)
  */
 export function computeProfit(state: AppState): ProfitSummary | null {
   const { profitInputs, beans, scenarios, ratios, platforms } = state;
@@ -219,9 +255,9 @@ export function computeProfit(state: AppState): ProfitSummary | null {
   }
   if (shareSum <= 0) {
     // fallback: 平均分配
-    const each = 1 / enabledBeans.length;
+    const each = enabledBeans.length > 0 ? 1 / enabledBeans.length : 0;
     enabledBeans.forEach((b) => shareMap.set(b.id, each));
-    shareSum = 1;
+    shareSum = enabledBeans.length > 0 ? 1 : 0;
   }
 
   // 先算每个 variant 的 annualKg
@@ -232,13 +268,13 @@ export function computeProfit(state: AppState): ProfitSummary | null {
   }
   const rows: Row[] = [];
   for (const b of enabledBeans) {
-    const beanShare = (shareMap.get(b.id) ?? 0) / shareSum;
+    const beanShare = shareSum > 0 ? (shareMap.get(b.id) ?? 0) / shareSum : 0;
     const beanKg = totalKg * beanShare;
 
     // 归一化 variants
     const vSum = b.variants.reduce((s, v) => s + (v.shareInBean || 0), 0);
     for (const v of b.variants) {
-      const vShare = vSum > 0 ? v.shareInBean / vSum : 1 / b.variants.length;
+      const vShare = vSum > 0 ? v.shareInBean / vSum : (b.variants.length > 0 ? 1 / b.variants.length : 0);
       rows.push({ bean: b, variant: v, annualKg: beanKg * vShare });
     }
   }
@@ -248,11 +284,17 @@ export function computeProfit(state: AppState): ProfitSummary | null {
   // 逐行计算
   const variantStats: VariantYearStats[] = rows.map((r) => {
     const pc = packCost(state, r.bean, r.variant);
-    const margin = profitInputs.globalMargin ?? r.bean.targetMargin;
-    const price = suggestedPrice(pc.productionCost, margin, platformFee, marketingShare);
-    const packs = (r.annualKg * 1000) / r.variant.weightG;
+    const { price, margin, isManual } = resolveVariantPricing(
+      r.variant,
+      pc.productionCost,
+      r.bean,
+      platformFee,
+      marketingShare,
+      profitInputs.globalMargin,
+    );
+    const packs = r.variant.weightG > 0 ? (r.annualKg * 1000) / r.variant.weightG : 0;
 
-    const gmv = packs * price;
+    const gmv = Number.isFinite(price) ? packs * price : 0;
     const productionTotal = packs * pc.productionCost;
     const opsAllocated = annualOps * (r.annualKg / kgTotal);
     const platformFeeTotal = gmv * platformFee;
@@ -264,11 +306,14 @@ export function computeProfit(state: AppState): ProfitSummary | null {
       beanId: r.bean.id,
       variantId: r.variant.id,
       beanName: r.bean.name,
+      variantLabel: variantLabel(r.variant),
       weightG: r.variant.weightG,
       annualKg: r.annualKg,
       annualPacks: packs,
       productionCost: pc.productionCost,
       price,
+      margin,
+      isManualPrice: isManual,
       gmv,
       productionTotal,
       opsAllocated,
@@ -290,20 +335,16 @@ export function computeProfit(state: AppState): ProfitSummary | null {
   const netProfit = gmvTotal - productionTotal - opsTotal - platformTotal - marketingTotal - returnLossTotal;
 
   // ===== Break-even =====
-  // 对每个 variant 计算"每 kg 贡献边际"
-  //   每包贡献 = 售价 × (1 − platformFee − marketing − returnRate) − 生产成本
-  //   每 kg 贡献 = 每包贡献 × (1000/克重)
-  // 再按 annualKg 占比加权得到整体 每 kg 贡献
   let contribPerKgWeighted = 0;
   for (const v of variantStats) {
-    const perPackContrib = v.price * (1 - platformFee - marketingShare - ratios.returnRate) - v.productionCost;
-    const perKgContrib = (perPackContrib * 1000) / v.weightG;
+    const perPackContrib = Number.isFinite(v.price)
+      ? v.price * (1 - platformFee - marketingShare - ratios.returnRate) - v.productionCost
+      : 0;
+    const perKgContrib = v.weightG > 0 ? (perPackContrib * 1000) / v.weightG : 0;
     contribPerKgWeighted += perKgContrib * (v.annualKg / kgTotal);
   }
   const fixedCost = annualOps;
   const breakevenKgPerYear = contribPerKgWeighted > 0 ? fixedCost / contribPerKgWeighted : Infinity;
-  // Break-even 金额 = kg 占比反推 GMV
-  //   对应 scenario 下的 gmv/kg 比率：
   const gmvPerKg = kgTotal > 0 ? gmvTotal / kgTotal : 0;
   const breakevenGmvPerYear = Number.isFinite(breakevenKgPerYear) ? breakevenKgPerYear * gmvPerKg : Infinity;
 

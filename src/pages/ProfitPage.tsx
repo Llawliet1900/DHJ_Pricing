@@ -146,11 +146,19 @@ export default function ProfitPage() {
               <tbody>
                 {summary.variants.map((v) => (
                   <tr key={v.variantId}>
-                    <td>{v.beanName} / {v.weightG}g</td>
+                    <td>
+                      {v.beanName} / {v.variantLabel}
+                      {v.isManualPrice && <span className="ml-1 text-xs text-amber-600" title="手动定价">✏️</span>}
+                    </td>
                     <td>{fmtNum(v.annualKg, 1)}</td>
                     <td>{fmtNum(v.annualPacks, 0)}</td>
                     <td>{fmtCNY(v.productionCost)}</td>
-                    <td className="text-blue-600 font-medium">{fmtCNY(v.price)}</td>
+                    <td className="text-blue-600 font-medium">
+                      {fmtCNY(v.price)}
+                      <div className="text-[10px] text-slate-400 font-normal">
+                        毛利 {fmtPct(v.margin)}
+                      </div>
+                    </td>
                     <td>{fmtCNY(v.gmv, 0)}</td>
                     <td>{fmtCNY(v.productionTotal, 0)}</td>
                     <td>{fmtCNY(v.opsAllocated, 0)}</td>
@@ -237,8 +245,8 @@ function SensitivityTable() {
 
   const scenarios: { name: string; mutate: (s: typeof baseState) => typeof baseState }[] = [
     { name: '基准', mutate: (s) => s },
-    { name: '生豆 +20%', mutate: (s) => patchCost(s, 'raw', 1.2) },
-    { name: '生豆 -20%', mutate: (s) => patchCost(s, 'raw', 0.8) },
+    { name: '生豆 +20%', mutate: (s) => patchGreenPrice(s, 1.2) },
+    { name: '生豆 -20%', mutate: (s) => patchGreenPrice(s, 0.8) },
     { name: '快递 +50%', mutate: (s) => patchCost(s, 'logistics', 1.5) },
     { name: '营销 +5pp', mutate: (s) => ({ ...s, ratios: { ...s.ratios, marketingOfGmv: s.ratios.marketingOfGmv + 0.05 } }) },
     { name: '营销 -5pp', mutate: (s) => ({ ...s, ratios: { ...s.ratios, marketingOfGmv: Math.max(0, s.ratios.marketingOfGmv - 0.05) } }) },
@@ -286,6 +294,14 @@ function patchCost(s: ReturnType<typeof useStore.getState>, cat: string, factor:
   return {
     ...s,
     costItems: s.costItems.map((c) => (c.category === cat ? { ...c, unitPrice: c.unitPrice * factor } : c)),
+  };
+}
+
+/** 对所有豆子的 greenPricePerKg 等比例调整 */
+function patchGreenPrice(s: ReturnType<typeof useStore.getState>, factor: number) {
+  return {
+    ...s,
+    beans: s.beans.map((b) => ({ ...b, greenPricePerKg: b.greenPricePerKg * factor })),
   };
 }
 

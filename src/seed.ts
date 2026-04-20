@@ -1,4 +1,4 @@
-import type { AppState, CostItem } from './types';
+import type { AppState, Bean, CostItem } from './types';
 
 const uid = (() => {
   let n = 0;
@@ -9,9 +9,9 @@ const uid = (() => {
 // 来源：用户原 Excel 《成本及定价核算.xlsx》 + 本次约定的新包装件清单
 // 新包装件：豆袋 / 贴纸 / 小卡 / 角贴 / 蜂窝纸 / 快递盒 / 胶带
 const costItems: CostItem[] = [
-  // ---- 原料（生豆） ----
-  { id: 'ci_raw_blend', category: 'raw', name: '拼配生豆', note: '拼配豆默认单价', unitPrice: 120, unit: '元/kg', enabled: true },
-  { id: 'ci_raw_soe',   category: 'raw', name: 'SOE 生豆',  note: '单品豆默认单价', unitPrice: 150, unit: '元/kg', enabled: true },
+  // ---- 原料（生豆）：这里保留作为"分类名称"引用，真实价格以每款豆子自带 greenPricePerKg 为准 ----
+  { id: 'ci_raw_blend', category: 'raw', name: '拼配生豆', note: '默认分类，真实单价见豆子页', unitPrice: 120, unit: '元/kg', enabled: true },
+  { id: 'ci_raw_soe',   category: 'raw', name: 'SOE 生豆',  note: '默认分类，真实单价见豆子页', unitPrice: 150, unit: '元/kg', enabled: true },
 
   // ---- 包装件（新清单） ----
   { id: 'ci_pkg_bag',     category: 'packaging', name: '豆袋',   unitPrice: 1.2,  unit: '元/个', enabled: true },
@@ -49,6 +49,34 @@ const costItems: CostItem[] = [
   { id: 'ci_rd', category: 'rd', name: '新品研发', unitPrice: 3000, unit: '元/年', enabled: true },
 ];
 
+const DEFAULT_PACKAGING = [
+  { costItemId: 'ci_pkg_bag',     qty: 1 },
+  { costItemId: 'ci_pkg_sticker', qty: 1 },
+  { costItemId: 'ci_pkg_card',    qty: 1 },
+  { costItemId: 'ci_pkg_corner',  qty: 1 },
+  { costItemId: 'ci_pkg_honey',   qty: 1 },
+  { costItemId: 'ci_pkg_box',     qty: 1 },
+  { costItemId: 'ci_pkg_tape',    qty: 1 },
+];
+
+// 每款豆子默认：两个规格 110g / 225g，包装 7 件，目标毛利 50%
+function makeBean(opts: { id: string; name: string; type: 'blend' | 'soe'; greenPrice: number }): Bean {
+  return {
+    id: opts.id,
+    name: opts.name,
+    type: opts.type,
+    greenPricePerKg: opts.greenPrice,
+    rawCostItemId: opts.type === 'blend' ? 'ci_raw_blend' : 'ci_raw_soe',
+    packaging: [...DEFAULT_PACKAGING],
+    variants: [
+      { id: `${opts.id}_v110`, label: '110g', weightG: 110, shareInBean: 0.6 },
+      { id: `${opts.id}_v225`, label: '225g', weightG: 225, shareInBean: 0.4 },
+    ],
+    targetMargin: 0.5,
+    enabled: true,
+  };
+}
+
 export const defaultState: AppState = {
   costItems,
 
@@ -58,6 +86,8 @@ export const defaultState: AppState = {
     lossPack: 0.05,
     returnRate: 0.01,
     marketingOfGmv: 0.20,
+    greenPriceBlendDefault: 120,
+    greenPriceSoeDefault: 150,
   },
 
   // 平台拆分（默认：全部在微信小程序卖，可改）
@@ -67,19 +97,19 @@ export const defaultState: AppState = {
     { id: 'pf_dy',  name: '抖音',       feeRate: 0.06, salesShare: 0   },
   ],
 
-  // 3 个产能情景：来自原表 capacity sheet
+  // 3 个产能情景
   scenarios: [
-    { id: 'sc_low',  name: 'Low',  hoursPerWeek: 4,  kgPerHour: 3, weeksPerYear: 40, },
-    { id: 'sc_mid',  name: 'Mid',  hoursPerWeek: 8,  kgPerHour: 3, weeksPerYear: 55, },
-    { id: 'sc_high', name: 'High', hoursPerWeek: 10, kgPerHour: 3, weeksPerYear: 60, },
+    { id: 'sc_low',  name: 'Low',  hoursPerWeek: 4,  kgPerHour: 3, weeksPerYear: 40 },
+    { id: 'sc_mid',  name: 'Mid',  hoursPerWeek: 8,  kgPerHour: 3, weeksPerYear: 55 },
+    { id: 'sc_high', name: 'High', hoursPerWeek: 10, kgPerHour: 3, weeksPerYear: 60 },
   ],
 
-  // 默认 4 款豆子：九尾（拼配）、朏胐（拼配）、精卫（SOE）、鸾鸟（SOE）
+  // 默认 4 款豆子：每款独立生豆单价（可到 Tab4 改）
   beans: [
-    makeBean({ id: 'bn_jiuwei', name: '九尾',  type: 'blend', raw: 'ci_raw_blend' }),
-    makeBean({ id: 'bn_feihu',  name: '朏胐',  type: 'blend', raw: 'ci_raw_blend' }),
-    makeBean({ id: 'bn_jingwei',name: '精卫',  type: 'soe',   raw: 'ci_raw_soe' }),
-    makeBean({ id: 'bn_luanniao',name:'鸾鸟', type: 'soe',   raw: 'ci_raw_soe' }),
+    makeBean({ id: 'bn_jiuwei',   name: '九尾',  type: 'blend', greenPrice: 120 }),
+    makeBean({ id: 'bn_feihu',    name: '朏胐',  type: 'blend', greenPrice: 120 }),
+    makeBean({ id: 'bn_jingwei',  name: '精卫',  type: 'soe',   greenPrice: 150 }),
+    makeBean({ id: 'bn_luanniao', name: '鸾鸟',  type: 'soe',   greenPrice: 150 }),
   ],
 
   profitInputs: {
@@ -98,33 +128,8 @@ export const defaultState: AppState = {
   meta: {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    version: 1,
+    version: 2,
   },
 };
 
-// 每款豆子默认：豆袋×1 + 贴纸×1 + 小卡×1 + 角贴×1 + 蜂窝纸×1 + 快递盒×1 + 胶带×1
-function makeBean(opts: { id: string; name: string; type: 'blend' | 'soe'; raw: string }) {
-  return {
-    id: opts.id,
-    name: opts.name,
-    type: opts.type,
-    rawCostItemId: opts.raw,
-    packaging: [
-      { costItemId: 'ci_pkg_bag',     qty: 1 },
-      { costItemId: 'ci_pkg_sticker', qty: 1 },
-      { costItemId: 'ci_pkg_card',    qty: 1 },
-      { costItemId: 'ci_pkg_corner',  qty: 1 },
-      { costItemId: 'ci_pkg_honey',   qty: 1 },
-      { costItemId: 'ci_pkg_box',     qty: 1 },
-      { costItemId: 'ci_pkg_tape',    qty: 1 },
-    ],
-    variants: [
-      { id: `${opts.id}_110`, weightG: 110, shareInBean: 0.6 },
-      { id: `${opts.id}_225`, weightG: 225, shareInBean: 0.4 },
-    ],
-    targetMargin: 0.5,
-    enabled: true,
-  };
-}
-
-export { uid };
+export { uid, DEFAULT_PACKAGING };

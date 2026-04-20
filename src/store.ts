@@ -1,7 +1,17 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AppState, Bean, BeanVariant, CostItem, PlatformRow, CapacityScenario, Ratios, ProfitInputs, BeanPackaging } from './types';
-import { defaultState, uid } from './seed';
+import type {
+  AppState,
+  Bean,
+  BeanVariant,
+  CostItem,
+  PlatformRow,
+  CapacityScenario,
+  Ratios,
+  ProfitInputs,
+  BeanPackaging,
+} from './types';
+import { defaultState, uid, DEFAULT_PACKAGING } from './seed';
 
 interface Actions {
   // 成本项
@@ -29,9 +39,10 @@ interface Actions {
   // 包装
   setBeanPackaging: (beanId: string, packaging: BeanPackaging[]) => void;
   // 变体（规格）
-  addVariant: (beanId: string, weightG?: number) => void;
+  addVariant: (beanId: string) => void;
   updateVariant: (beanId: string, variantId: string, patch: Partial<BeanVariant>) => void;
   deleteVariant: (beanId: string, variantId: string) => void;
+  duplicateVariant: (beanId: string, variantId: string) => void;
 
   // 盈利页输入
   updateProfitInputs: (patch: Partial<ProfitInputs>) => void;
@@ -114,23 +125,21 @@ export const useStore = create<Store>()(
       addBean: () =>
         set((s) => {
           const id = uid('bn');
+          const defaultType: 'blend' | 'soe' = 'blend';
+          const defaultGreen =
+            defaultType === 'blend'
+              ? s.ratios.greenPriceBlendDefault ?? 120
+              : s.ratios.greenPriceSoeDefault ?? 150;
           const bean: Bean = {
             id,
             name: `新豆款 ${s.beans.length + 1}`,
-            type: 'blend',
-            rawCostItemId: s.costItems.find((c) => c.category === 'raw')?.id ?? '',
-            packaging: [
-              { costItemId: 'ci_pkg_bag',     qty: 1 },
-              { costItemId: 'ci_pkg_sticker', qty: 1 },
-              { costItemId: 'ci_pkg_card',    qty: 1 },
-              { costItemId: 'ci_pkg_corner',  qty: 1 },
-              { costItemId: 'ci_pkg_honey',   qty: 1 },
-              { costItemId: 'ci_pkg_box',     qty: 1 },
-              { costItemId: 'ci_pkg_tape',    qty: 1 },
-            ],
+            type: defaultType,
+            greenPricePerKg: defaultGreen,
+            rawCostItemId: 'ci_raw_blend',
+            packaging: [...DEFAULT_PACKAGING],
             variants: [
-              { id: `${id}_110`, weightG: 110, shareInBean: 0.6 },
-              { id: `${id}_225`, weightG: 225, shareInBean: 0.4 },
+              { id: uid('var'), label: '110g', weightG: 110, shareInBean: 0.6 },
+              { id: uid('var'), label: '225g', weightG: 225, shareInBean: 0.4 },
             ],
             targetMargin: 0.5,
             enabled: true,
@@ -145,7 +154,18 @@ export const useStore = create<Store>()(
           };
         }),
       updateBean: (id, patch) =>
-        set((s) => ({ beans: s.beans.map((b) => (b.id === id ? { ...b, ...patch } : b)), meta: bumpMeta(s) })),
+        set((s) => ({
+          beans: s.beans.map((b) => {
+            if (b.id !== id) return b;
+            const next = { ...b, ...patch };
+            // 如果切换了 type，默认 rawCostItemId 跟着换（用户可再手动改）
+            if (patch.type && patch.type !== b.type) {
+              next.rawCostItemId = patch.type === 'blend' ? 'ci_raw_blend' : 'ci_raw_soe';
+            }
+            return next;
+          }),
+          meta: bumpMeta(s),
+        })),
       deleteBean: (id) =>
         set((s) => ({
           beans: s.beans.filter((b) => b.id !== id),
@@ -158,13 +178,25 @@ export const useStore = create<Store>()(
       setBeanPackaging: (beanId, packaging) =>
         set((s) => ({ beans: s.beans.map((b) => (b.id === beanId ? { ...b, packaging } : b)), meta: bumpMeta(s) })),
 
-      addVariant: (beanId, weightG = 110) =>
+      addVariant: (beanId) =>
         set((s) => ({
-          beans: s.beans.map((b) =>
-            b.id === beanId
-              ? { ...b, variants: [...b.variants, { id: uid('var'), weightG, shareInBean: 0 }] }
-              : b,
-          ),
+          beans: s.beans.map((b) => {
+            if (b.id !== beanId) return b;
+            // 复制最后一个 variant 作为模板，只清空占比让用户重新分配
+            const last = b.variants[b.variants.length - 1];
+            const newV: BeanVariant = last
+              ? {
+                  id: uid('var'),
+                  label: `${last.weightG}g (copy)`,
+                  weightG: last.weightG,
+                  shareInBean: 0,
+                  packagingOverride: last.packagingOverride ? [...last.packagingOverride] : undefined,
+                  logisticsCostItemId: last.logisticsCostItemId,
+                  manualPrice: false,
+                }
+              : { id: uid('var'), label: '新规格', weightG: 110, shareInBean: 0 };
+            return { ...b, variants: [...b.variants, newV] };
+          }),
           meta: bumpMeta(s),
         })),
       updateVariant: (beanId, variantId, patch) =>
@@ -181,6 +213,23 @@ export const useStore = create<Store>()(
           beans: s.beans.map((b) =>
             b.id === beanId ? { ...b, variants: b.variants.filter((v) => v.id !== variantId) } : b,
           ),
+          meta: bumpMeta(s),
+        })),
+      duplicateVariant: (beanId, variantId) =>
+        set((s) => ({
+          beans: s.beans.map((b) => {
+            if (b.id !== beanId) return b;
+            const src = b.variants.find((v) => v.id === variantId);
+            if (!src) return b;
+            const copy: BeanVariant = {
+              ...src,
+              id: uid('var'),
+              label: (src.label || `${src.weightG}g`) + ' 副本',
+              shareInBean: 0,
+              packagingOverride: src.packagingOverride ? [...src.packagingOverride] : undefined,
+            };
+            return { ...b, variants: [...b.variants, copy] };
+          }),
           meta: bumpMeta(s),
         })),
 
@@ -215,12 +264,14 @@ export const useStore = create<Store>()(
           if (!data.costItems || !data.beans || !data.scenarios) {
             return { ok: false, message: '文件格式不符合 DHJ 核算数据结构' };
           }
+          // 兼容旧数据：beans 可能没有 greenPricePerKg，尝试从 costItems 里取
+          const migratedBeans: Bean[] = (data.beans as Bean[]).map((b) => migrateBean(b, data.costItems));
           set((s) => ({
             costItems: data.costItems,
-            ratios: data.ratios ?? s.ratios,
+            ratios: { ...s.ratios, ...(data.ratios ?? {}) },
             platforms: data.platforms ?? s.platforms,
             scenarios: data.scenarios,
-            beans: data.beans,
+            beans: migratedBeans,
             profitInputs: data.profitInputs ?? s.profitInputs,
             defaultLogisticsCostItemId: data.defaultLogisticsCostItemId ?? s.defaultLogisticsCostItemId,
             meta: bumpMeta(s),
@@ -234,10 +285,39 @@ export const useStore = create<Store>()(
     }),
     {
       name: 'dhj-cost-calc',
-      version: 1,
+      version: 2,
+      // 老版本（v1）localStorage 数据迁移：豆子没有 greenPricePerKg
+      migrate: (persistedState: unknown, version: number): Store => {
+        const state = persistedState as AppState;
+        if (!state) return defaultState as Store;
+        if (version < 2) {
+          const beans = (state.beans ?? []).map((b) => migrateBean(b, state.costItems ?? []));
+          return {
+            ...(state as Store),
+            beans,
+            meta: { ...(state.meta ?? defaultState.meta), version: 2 },
+          };
+        }
+        return state as Store;
+      },
     },
   ),
 );
+
+// ============ 迁移 / 兼容 ============
+function migrateBean(b: Bean, costItems: CostItem[]): Bean {
+  let greenPrice = (b as Partial<Bean>).greenPricePerKg;
+  if (greenPrice === undefined || greenPrice === null) {
+    const ci = costItems.find((c) => c.id === b.rawCostItemId);
+    greenPrice = ci?.unitPrice ?? (b.type === 'blend' ? 120 : 150);
+  }
+  const variants = (b.variants || []).map((v) => ({
+    ...v,
+    label: v.label ?? `${v.weightG}g`,
+    manualPrice: v.manualPrice ?? false,
+  }));
+  return { ...b, greenPricePerKg: greenPrice, variants };
+}
 
 function bumpMeta(s: AppState) {
   return { ...s.meta, updatedAt: new Date().toISOString() };
