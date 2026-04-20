@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 font-sans antialiased;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+
+/* 表格通用样式 */
+table.dhj {
+  @apply w-full border-collapse text-sm;
+}
+table.dhj th {
+  @apply bg-slate-100 text-left font-medium text-slate-600 px-3 py-2 border border-slate-200;
+}
+table.dhj td {
+  @apply px-3 py-1.5 border border-slate-200 align-middle;
+}
+table.dhj tr:hover td {
+  @apply bg-slate-50;
+}
+
+input.dhj,
+select.dhj {
+  @apply w-full px-2 py-1 border border-slate-300 rounded bg-white text-sm
+         focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent;
+}
+
+button.dhj {
+  @apply px-3 py-1.5 rounded text-sm font-medium transition-colors;
+}
+button.dhj-primary {
+  @apply bg-blue-600 text-white hover:bg-blue-700;
+}
+button.dhj-ghost {
+  @apply bg-slate-100 text-slate-700 hover:bg-slate-200;
+}
+button.dhj-danger {
+  @apply bg-rose-50 text-rose-700 hover:bg-rose-100;
+}
+
+.card {
+  @apply bg-white rounded-lg border border-slate-200 shadow-sm;
+}
