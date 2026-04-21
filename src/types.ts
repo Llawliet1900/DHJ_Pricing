@@ -102,6 +102,8 @@ export interface ProfitInputs {
   scenarioId: string;        // 选用哪个产能情景
   beanShares: BeanShare[];   // 各款豆子产能占比
   globalMargin?: number;     // 可选：全局覆盖 targetMargin
+  // 是否包邮：true = 商家承担物流（默认，老口径）；false = 用户另付运费（成本中扣除物流）
+  freeShipping?: boolean;
 }
 
 // ============= 顶层状态 =============

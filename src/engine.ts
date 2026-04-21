@@ -81,7 +81,18 @@ export function rawGramsPerPack(weightG: number, r: Ratios): number {
   return weightG / (1 - r.lossSort) / (1 - r.lossRoast);
 }
 
-export function packCost(state: AppState, bean: Bean, variant: BeanVariant): PackCostBreakdown {
+/**
+ * 计算单包成本。
+ * @param includeLogistics 是否把物流计入生产成本；默认 true。
+ *   - true  = 包邮：物流算在生产成本里（卖家承担运费）
+ *   - false = 不包邮：物流不计入（由用户另付运费，卖家不承担）
+ */
+export function packCost(
+  state: AppState,
+  bean: Bean,
+  variant: BeanVariant,
+  includeLogistics = true,
+): PackCostBreakdown {
   const r = state.ratios;
   // 生豆价：优先使用 bean.greenPricePerKg；如果 0 且有 rawCostItemId 就 fallback 到成本项
   let greenPrice = bean.greenPricePerKg;
@@ -103,9 +114,10 @@ export function packCost(state: AppState, bean: Bean, variant: BeanVariant): Pac
     state,
     variant.logisticsCostItemId ?? state.defaultLogisticsCostItemId ?? undefined,
   );
-  const logisticsCost = logCi?.unitPrice ?? 0;
+  const logisticsRaw = logCi?.unitPrice ?? 0;
+  const logisticsCost = includeLogistics ? logisticsRaw : 0;
 
-  // 生产成本（含包装损耗）+ 物流
+  // 生产成本（含包装损耗）+ 物流（按 includeLogistics 决定是否计入）
   const productionCost = (rawCost + packagingCost) * (1 + r.lossPack) + logisticsCost;
 
   return {
@@ -282,11 +294,16 @@ export function computeProfit(state: AppState): ProfitSummary | null {
   const kgTotal = rows.reduce((s, r) => s + r.annualKg, 0) || 1;
 
   // 逐行计算
+  // 默认包邮（和 v0.2 行为一致）；不包邮时只把"生产成本中的物流"扣掉，售价不变。
+  const freeShipping = profitInputs.freeShipping ?? true;
   const variantStats: VariantYearStats[] = rows.map((r) => {
-    const pc = packCost(state, r.bean, r.variant);
+    // 售价始终按"含物流的成本"推（切换包邮开关时售价保持不变）
+    const pcWithLog = packCost(state, r.bean, r.variant, true);
+    // 实际计入利润的成本：不包邮时扣掉物流
+    const pc = freeShipping ? pcWithLog : packCost(state, r.bean, r.variant, false);
     const { price, margin, isManual } = resolveVariantPricing(
       r.variant,
-      pc.productionCost,
+      pcWithLog.productionCost,
       r.bean,
       platformFee,
       marketingShare,

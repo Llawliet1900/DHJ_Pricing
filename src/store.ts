@@ -18,6 +18,7 @@ interface Actions {
   addCostItem: (item?: Partial<CostItem>) => void;
   updateCostItem: (id: string, patch: Partial<CostItem>) => void;
   deleteCostItem: (id: string) => void;
+  moveCostItem: (id: string, dir: -1 | 1) => void;
 
   // 比例
   updateRatios: (patch: Partial<Ratios>) => void;
@@ -36,6 +37,7 @@ interface Actions {
   addBean: () => void;
   updateBean: (id: string, patch: Partial<Bean>) => void;
   deleteBean: (id: string) => void;
+  moveBean: (id: string, dir: -1 | 1) => void;
   // 包装
   setBeanPackaging: (beanId: string, packaging: BeanPackaging[]) => void;
   // 变体（规格）
@@ -86,6 +88,11 @@ export const useStore = create<Store>()(
       deleteCostItem: (id) =>
         set((s) => ({
           costItems: s.costItems.filter((c) => c.id !== id),
+          meta: bumpMeta(s),
+        })),
+      moveCostItem: (id, dir) =>
+        set((s) => ({
+          costItems: moveArr(s.costItems, id, dir),
           meta: bumpMeta(s),
         })),
 
@@ -145,10 +152,10 @@ export const useStore = create<Store>()(
             enabled: true,
           };
           return {
-            beans: [...s.beans, bean],
+            beans: [bean, ...s.beans],
             profitInputs: {
               ...s.profitInputs,
-              beanShares: [...s.profitInputs.beanShares, { beanId: id, share: 0 }],
+              beanShares: [{ beanId: id, share: 0 }, ...s.profitInputs.beanShares],
             },
             meta: bumpMeta(s),
           };
@@ -173,6 +180,11 @@ export const useStore = create<Store>()(
             ...s.profitInputs,
             beanShares: s.profitInputs.beanShares.filter((x) => x.beanId !== id),
           },
+          meta: bumpMeta(s),
+        })),
+      moveBean: (id, dir) =>
+        set((s) => ({
+          beans: moveArr(s.beans, id, dir),
           meta: bumpMeta(s),
         })),
       setBeanPackaging: (beanId, packaging) =>
@@ -321,4 +333,16 @@ function migrateBean(b: Bean, costItems: CostItem[]): Bean {
 
 function bumpMeta(s: AppState) {
   return { ...s.meta, updatedAt: new Date().toISOString() };
+}
+
+/** 在数组中把 id 元素上移(-1)或下移(+1)一格；边界不动 */
+function moveArr<T extends { id: string }>(arr: T[], id: string, dir: -1 | 1): T[] {
+  const idx = arr.findIndex((x) => x.id === id);
+  if (idx < 0) return arr;
+  const target = idx + dir;
+  if (target < 0 || target >= arr.length) return arr;
+  const next = [...arr];
+  const [item] = next.splice(idx, 1);
+  next.splice(target, 0, item);
+  return next;
 }

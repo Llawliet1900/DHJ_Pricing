@@ -55,6 +55,28 @@ export default function ProfitPage() {
             )}
             <span className="text-xs text-slate-400">（不启用时按各豆款单独设的毛利率）</span>
           </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-500">物流口径</span>
+            <label className="text-xs text-slate-600 flex items-center gap-1">
+              <input
+                type="radio"
+                name="freeShipping"
+                checked={(pi.freeShipping ?? true) === true}
+                onChange={() => setPI({ freeShipping: true })}
+              />
+              包邮（物流计入成本）
+            </label>
+            <label className="text-xs text-slate-600 flex items-center gap-1">
+              <input
+                type="radio"
+                name="freeShipping"
+                checked={(pi.freeShipping ?? true) === false}
+                onChange={() => setPI({ freeShipping: false })}
+              />
+              不包邮（用户另付运费）
+            </label>
+            <span className="text-xs text-slate-400">（切换不改动售价，仅影响成本侧）</span>
+          </div>
         </div>
 
         <div>

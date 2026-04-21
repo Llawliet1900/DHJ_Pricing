@@ -14,6 +14,7 @@ import {
 export default function BeansPage() {
   const beans = useStore((s) => s.beans);
   const addBean = useStore((s) => s.addBean);
+  const moveBean = useStore((s) => s.moveBean);
 
   return (
     <div className="space-y-4">
@@ -29,13 +30,34 @@ export default function BeansPage() {
       </header>
 
       <div className="grid grid-cols-1 gap-4">
-        {beans.map((b) => <BeanCard key={b.id} bean={b} />)}
+        {beans.map((b, i) => (
+          <BeanCard
+            key={b.id}
+            bean={b}
+            canMoveUp={i > 0}
+            canMoveDown={i < beans.length - 1}
+            onMoveUp={() => moveBean(b.id, -1)}
+            onMoveDown={() => moveBean(b.id, 1)}
+          />
+        ))}
       </div>
     </div>
   );
 }
 
-function BeanCard({ bean }: { bean: Bean }) {
+function BeanCard({
+  bean,
+  canMoveUp,
+  canMoveDown,
+  onMoveUp,
+  onMoveDown,
+}: {
+  bean: Bean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+}) {
   const state = useStore();
   const update = useStore((s) => s.updateBean);
   const del = useStore((s) => s.deleteBean);
@@ -80,7 +102,19 @@ function BeanCard({ bean }: { bean: Bean }) {
           <span className="text-xs text-slate-500">目标毛利率</span>
           <PctInput value={bean.targetMargin} onChange={(v) => update(bean.id, { targetMargin: v })} />
         </div>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            className="dhj dhj-ghost text-xs px-2"
+            onClick={onMoveUp}
+            disabled={!canMoveUp}
+            title="上移"
+          >↑</button>
+          <button
+            className="dhj dhj-ghost text-xs px-2"
+            onClick={onMoveDown}
+            disabled={!canMoveDown}
+            title="下移"
+          >↓</button>
           <button className="dhj dhj-danger" onClick={() => del(bean.id)}>删除此豆款</button>
         </div>
       </div>
@@ -154,9 +188,9 @@ function BeanCard({ bean }: { bean: Bean }) {
         <table className="dhj">
           <thead>
             <tr>
-              <th className="w-28">规格名</th>
-              <th className="w-20">熟豆(g)</th>
-              <th className="w-24">本款占比</th>
+              <th className="w-32">规格名</th>
+              <th className="w-24">熟豆(g)</th>
+              <th className="w-28">本款占比</th>
               <th className="w-28">生豆用量</th>
               <th className="w-24">生豆成本</th>
               <th className="w-24">包装</th>
@@ -166,7 +200,7 @@ function BeanCard({ bean }: { bean: Bean }) {
               <th className="w-28">售价</th>
               <th className="w-24">实际毛利</th>
               <th className="w-24">每包净利</th>
-              <th className="w-24">操作</th>
+              <th className="w-20">操作</th>
             </tr>
           </thead>
           <tbody>

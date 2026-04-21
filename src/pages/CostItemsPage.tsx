@@ -21,6 +21,7 @@ export default function CostItemsPage() {
   const addCostItem = useStore((s) => s.addCostItem);
   const updateCostItem = useStore((s) => s.updateCostItem);
   const deleteCostItem = useStore((s) => s.deleteCostItem);
+  const moveCostItem = useStore((s) => s.moveCostItem);
   const defaultLogId = useStore((s) => s.defaultLogisticsCostItemId);
   const setDefaultLog = useStore((s) => s.setDefaultLogistics);
 
@@ -66,11 +67,12 @@ export default function CostItemsPage() {
               <th className="w-24">单位</th>
               <th className="w-32">摊销年数</th>
               <th className="w-28">默认物流</th>
+              <th className="w-16">排序</th>
               <th className="w-20">操作</th>
             </tr>
           </thead>
           <tbody>
-            {items.map((c) => (
+            {items.map((c, i) => (
               <tr key={c.id}>
                 <td>
                   <Checkbox checked={c.enabled} onChange={(b) => updateCostItem(c.id, { enabled: b })} />
@@ -115,6 +117,22 @@ export default function CostItemsPage() {
                   ) : (
                     <span className="text-slate-400 text-xs">—</span>
                   )}
+                </td>
+                <td>
+                  <div className="flex gap-0.5">
+                    <button
+                      className="dhj dhj-ghost text-xs px-1.5"
+                      onClick={() => moveCostItem(c.id, -1)}
+                      disabled={i === 0}
+                      title="上移"
+                    >↑</button>
+                    <button
+                      className="dhj dhj-ghost text-xs px-1.5"
+                      onClick={() => moveCostItem(c.id, 1)}
+                      disabled={i === items.length - 1}
+                      title="下移"
+                    >↓</button>
+                  </div>
                 </td>
                 <td>
                   <button className="dhj dhj-danger" onClick={() => deleteCostItem(c.id)}>

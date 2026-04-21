@@ -2,6 +2,7 @@ import { useStore } from '../store';
 import {
   annualOperationCost,
   capacityKgPerYear,
+  computeProfit,
   fmtCNY,
   fmtNum,
   fmtPct,
@@ -19,6 +20,9 @@ export default function AuditPage() {
   const r = state.ratios;
   const fee = weightedPlatformFee(state.platforms);
   const ops = annualOperationCost(state);
+  const summary = computeProfit(state);
+  const currentScenario = state.scenarios.find((s) => s.id === state.profitInputs.scenarioId);
+  const freeShipping = state.profitInputs.freeShipping ?? true;
 
   return (
     <div className="space-y-5 text-sm">
@@ -199,6 +203,71 @@ export default function AuditPage() {
           退货计提 = 年 GMV × 退货率 <br />
           净利润 = GMV − 年生产成本 − 运营分摊 − 平台抽成 − 营销 − 退货
         </Formula>
+
+        <div className="mt-3 text-xs text-slate-500">
+          当前情景：<span className="font-medium text-slate-700">{currentScenario?.name ?? '（未选）'}</span>
+          ，年总产能 <span className="font-medium text-slate-700">{fmtNum(summary?.annualKgTotal ?? 0, 1)} kg</span>
+          ，物流口径：<span className="font-medium text-slate-700">{freeShipping ? '包邮（计入成本）' : '不包邮（用户另付）'}</span>
+        </div>
+
+        {summary && summary.variants.length > 0 && (
+          <table className="dhj mt-2">
+            <thead>
+              <tr>
+                <th>豆款 / 规格</th>
+                <th className="w-20">年 kg</th>
+                <th className="w-20">年包数</th>
+                <th className="w-24">单包成本</th>
+                <th className="w-24">售价</th>
+                <th className="w-28">年 GMV</th>
+                <th className="w-28">年生产成本</th>
+                <th className="w-28">运营分摊</th>
+                <th className="w-24">平台抽成</th>
+                <th className="w-24">营销</th>
+                <th className="w-24">退货</th>
+                <th className="w-28">净利润</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.variants.map((v) => (
+                <tr key={v.variantId}>
+                  <td>{v.beanName} / {v.variantLabel}</td>
+                  <td>{fmtNum(v.annualKg, 1)}</td>
+                  <td>{fmtNum(v.annualPacks, 0)}</td>
+                  <td>{fmtCNY(v.productionCost)}</td>
+                  <td>{fmtCNY(v.price)}</td>
+                  <td>{fmtCNY(v.gmv, 0)}</td>
+                  <td>{fmtCNY(v.productionTotal, 0)}</td>
+                  <td>{fmtCNY(v.opsAllocated, 0)}</td>
+                  <td>{fmtCNY(v.platformFeeTotal, 0)}</td>
+                  <td>{fmtCNY(v.marketingTotal, 0)}</td>
+                  <td>{fmtCNY(v.returnLossTotal, 0)}</td>
+                  <td className={v.netProfit >= 0 ? 'text-emerald-600 font-medium' : 'text-rose-600 font-medium'}>
+                    {fmtCNY(v.netProfit, 0)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td className="text-right">合计</td>
+                <td>{fmtNum(summary.annualKgTotal, 1)}</td>
+                <td>{fmtNum(summary.annualPacksTotal, 0)}</td>
+                <td />
+                <td />
+                <td>{fmtCNY(summary.gmvTotal, 0)}</td>
+                <td>{fmtCNY(summary.productionTotal, 0)}</td>
+                <td>{fmtCNY(summary.opsTotal, 0)}</td>
+                <td>{fmtCNY(summary.platformTotal, 0)}</td>
+                <td>{fmtCNY(summary.marketingTotal, 0)}</td>
+                <td>{fmtCNY(summary.returnLossTotal, 0)}</td>
+                <td className={summary.netProfit >= 0 ? 'text-emerald-700 font-semibold' : 'text-rose-700 font-semibold'}>
+                  {fmtCNY(summary.netProfit, 0)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        )}
       </Section>
 
       {/* 7. Break-even */}
@@ -209,6 +278,35 @@ export default function AuditPage() {
           整体 kg 贡献 = Σ(每 kg 贡献 × 本 variant 年 kg / 总年 kg) <br />
           保本年销量 = 年度总运营 / 整体 kg 贡献
         </Formula>
+
+        {summary && (
+          <table className="dhj mt-2">
+            <tbody>
+              <tr>
+                <td className="w-48 text-slate-500">固定成本（年度总运营）</td>
+                <td className="font-medium">{fmtCNY(summary.breakeven.fixedCost)}</td>
+              </tr>
+              <tr>
+                <td className="text-slate-500">每 kg 贡献边际</td>
+                <td className={summary.breakeven.contributionPerKg > 0 ? 'font-medium' : 'text-rose-600 font-medium'}>
+                  {fmtCNY(summary.breakeven.contributionPerKg)}
+                </td>
+              </tr>
+              <tr>
+                <td className="text-slate-500">保本年销量</td>
+                <td className="font-medium">{fmtNum(summary.breakeven.kgPerYear, 1)} kg</td>
+              </tr>
+              <tr>
+                <td className="text-slate-500">保本月销量</td>
+                <td className="font-medium">{fmtNum(summary.breakeven.kgPerMonth, 1)} kg</td>
+              </tr>
+              <tr>
+                <td className="text-slate-500">保本月 GMV</td>
+                <td className="font-medium">{fmtCNY(summary.breakeven.gmvPerMonth)}</td>
+              </tr>
+            </tbody>
+          </table>
+        )}
       </Section>
     </div>
   );
