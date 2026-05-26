@@ -372,9 +372,9 @@ export const useStore = create<Store>()(
 
       // ========== 导入导出 ==========
       exportJson: () => {
-        const { costItems, ratios, platforms, scenarios, beans, profitInputs, defaultLogisticsCostItemId, meta } = get();
+        const { costItems, ratios, platforms, scenarios, beans, profitInputs, defaultLogisticsCostItemId, sales, meta } = get();
         return JSON.stringify(
-          { costItems, ratios, platforms, scenarios, beans, profitInputs, defaultLogisticsCostItemId, meta },
+          { costItems, ratios, platforms, scenarios, beans, profitInputs, defaultLogisticsCostItemId, sales, meta },
           null,
           2,
         );
@@ -395,6 +395,8 @@ export const useStore = create<Store>()(
             beans: migratedBeans,
             profitInputs: data.profitInputs ?? s.profitInputs,
             defaultLogisticsCostItemId: data.defaultLogisticsCostItemId ?? s.defaultLogisticsCostItemId,
+            // sales 字段：v0.4 新加，老 JSON 文件里可能没有，缺失时保留当前 state 的 sales（不要清空已有订单）
+            sales: data.sales ?? s.sales,
             meta: bumpMeta(s),
           }));
           return { ok: true, message: '导入成功' };
