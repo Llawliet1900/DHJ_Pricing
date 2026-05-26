@@ -5,10 +5,11 @@ import RatiosPage from './pages/RatiosPage';
 import CapacityPage from './pages/CapacityPage';
 import BeansPage from './pages/BeansPage';
 import ProfitPage from './pages/ProfitPage';
+import SalesPage from './pages/SalesPage';
 import AuditPage from './pages/AuditPage';
 import { useStore } from './store';
 
-type TabKey = 'cost' | 'ratio' | 'cap' | 'beans' | 'profit' | 'audit';
+type TabKey = 'cost' | 'ratio' | 'cap' | 'beans' | 'profit' | 'sales' | 'audit';
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'cost',   label: '1. 成本项' },
@@ -16,7 +17,8 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'cap',    label: '3. 产能' },
   { key: 'beans',  label: '4. 豆子配方' },
   { key: 'profit', label: '5. 盈利总览' },
-  { key: 'audit',  label: '6. 计算校验' },
+  { key: 'sales',  label: '6. 实销分析' },
+  { key: 'audit',  label: '7. 计算校验' },
 ];
 
 export default function App() {
@@ -95,6 +97,7 @@ function Main() {
         {tab === 'cap' && <CapacityPage />}
         {tab === 'beans' && <BeansPage />}
         {tab === 'profit' && <ProfitPage />}
+        {tab === 'sales' && <SalesPage />}
         {tab === 'audit' && <AuditPage />}
       </main>
 

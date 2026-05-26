@@ -125,10 +125,28 @@ export const defaultState: AppState = {
 
   defaultLogisticsCostItemId: 'ci_log_express',
 
+  // ============ 实销分析 默认值 ============
+  sales: {
+    orders: [],
+    specMappings: [],
+    platformConfig: {
+      defaultPlatform: '小红书',
+      defaultFeeRate: 0.01, // 小红书佣金 ~0.8%，按 1% 估算
+    },
+    analysis: {
+      windowMode: 'all',
+      windowDays: 14,
+      freeShipping: true,
+      operationAllocation: 'both',
+    },
+    importedFiles: [],
+    salesStartDate: undefined,
+  },
+
   meta: {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    version: 2,
+    version: 3,
   },
 };
 

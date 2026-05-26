@@ -106,6 +106,81 @@ export interface ProfitInputs {
   freeShipping?: boolean;
 }
 
+// ============= 实销分析（Sales）=============
+/**
+ * 一笔订单中的一个 SKU 行（同一订单 ID 多 SKU 会拆为多行）。
+ * 数据来源：从平台导出的订单明细 Excel 解析得到。
+ * 去重 key：`${orderId}__${specId}`。
+ */
+export interface SalesOrder {
+  id: string;                  // 内部 uid
+  orderId: string;             // 平台订单 ID
+  specId: string;              // 平台规格 ID（用于映射到本系统的 bean+variant）
+  paidAt: string;              // ISO 时间，支付时间
+  productName: string;         // 原始商品名（保留用于展示和映射）
+  specName: string;            // 原始规格名
+  quantity: number;            // 件数
+  grossAmount: number;         // 支付金额（GMV，未扣平台佣金）
+  channel?: string;            // 渠道（如：发现页/综合搜索页/个人主页/商品笔记...）
+  carrier?: string;            // 一级载体（商卡/笔记/直播间）
+  source: string;              // 数据来源标记（如文件名）
+  importedAt: string;          // 导入时间戳
+}
+
+/**
+ * 平台规格 ID → 本系统 bean+variant 的映射。
+ * 首次导入时尝试根据商品名/规格名自动匹配；匹配不上的让用户手动指认。
+ * unmapped=true 表示尚未映射（计算时跳过）。
+ */
+export interface SpecMapping {
+  specId: string;
+  beanId: string | null;
+  variantId: string | null;
+  unmapped: boolean;
+  // 保留原始名字，方便展示
+  productName: string;
+  specName: string;
+}
+
+/**
+ * 平台佣金费率（按订单的 carrier/channel 标识平台）。
+ * 当前版本只有"小红书"一个隐式平台 → 用一个全局费率即可；
+ * 后续多平台再扩展为 array。
+ */
+export interface SalesPlatformConfig {
+  defaultPlatform: string;   // 默认平台名（如"小红书"）
+  defaultFeeRate: number;    // 默认平台佣金率（如 0.01）
+}
+
+/**
+ * 跑速分析窗口模式。
+ *  - 'all' 全部历史
+ *  - 'days' 最近 N 天
+ *  - 'custom' 自定义起止
+ */
+export type RunRateWindowMode = 'all' | 'days' | 'custom';
+
+export interface SalesAnalysisInputs {
+  windowMode: RunRateWindowMode;
+  windowDays: number;        // 当 mode='days' 时使用
+  customStart?: string;      // 当 mode='custom' 时
+  customEnd?: string;
+  freeShipping: boolean;     // 实销分析里是否包邮（影响成本侧）
+  // 运营成本摊销口径：'days' 按销售天数比例摊；'volume' 按销量占比摊
+  operationAllocation: 'days' | 'volume' | 'both';
+}
+
+export interface SalesState {
+  orders: SalesOrder[];
+  specMappings: SpecMapping[];
+  platformConfig: SalesPlatformConfig;
+  analysis: SalesAnalysisInputs;
+  // 已导入文件登记：用于 UI 提示"哪些区间已经吃过了"
+  importedFiles: { name: string; rangeStart?: string; rangeEnd?: string; importedAt: string; rows: number }[];
+  // 销售起始日：自动取所有订单的 min(paidAt)；若无订单则为空
+  salesStartDate?: string;
+}
+
 // ============= 顶层状态 =============
 export interface AppState {
   costItems: CostItem[];
@@ -116,6 +191,8 @@ export interface AppState {
   profitInputs: ProfitInputs;
   // 全局的"快递单费"快捷引用（物流类的默认项）
   defaultLogisticsCostItemId: string | null;
+  // 实销分析数据
+  sales: SalesState;
   // 运营成本分摊里，一次性成本用哪个默认摊销年数（仅作为 UI hint）
   meta: {
     createdAt: string;

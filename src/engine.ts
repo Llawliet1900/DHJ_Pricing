@@ -12,6 +12,7 @@ import type {
   CostItem,
   PlatformRow,
   Ratios,
+  SalesOrder,
 } from './types';
 
 // ==================== 基础查询 ====================
@@ -407,3 +408,294 @@ export function fmtNum(n: number, digits = 2): string {
   if (!Number.isFinite(n)) return '—';
   return n.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
+
+// ==================== 实销分析（Sales） ====================
+
+/** 一行汇总（按 bean × variant 聚合，或仅按 bean 聚合时 variantId 为 null） */
+export interface SalesAggRow {
+  beanId: string;
+  variantId: string | null;
+  beanName: string;
+  variantLabel: string;
+  quantity: number;          // 总袋数
+  grossRevenue: number;      // Σ 支付金额（GMV）
+  netRevenue: number;        // GMV × (1 - 平台佣金率)
+  unitPriceAvg: number;      // 加权均价 = grossRevenue / quantity
+  variableCost: number;      // Σ (单包变动成本 × 袋数)
+  marketing: number;         // GMV × marketingOfGmv
+  grossProfit: number;       // netRevenue - variableCost - marketing
+  orderCount: number;        // 涉及订单数（去重 orderId）
+}
+
+/** 过滤订单到时间窗口 */
+export function filterOrdersByWindow(
+  orders: SalesOrder[],
+  mode: 'all' | 'days' | 'custom',
+  windowDays: number,
+  customStart?: string,
+  customEnd?: string,
+): SalesOrder[] {
+  if (orders.length === 0) return [];
+  if (mode === 'all') return orders;
+  const dates = orders.map((o) => +new Date(o.paidAt));
+  const maxT = Math.max(...dates);
+  if (mode === 'days') {
+    const cutoff = maxT - (windowDays - 1) * 86400_000;
+    return orders.filter((o) => +new Date(o.paidAt) >= cutoff);
+  }
+  // custom
+  const s = customStart ? +new Date(customStart) : -Infinity;
+  const e = customEnd ? +new Date(customEnd) + 86400_000 - 1 : Infinity;
+  return orders.filter((o) => {
+    const t = +new Date(o.paidAt);
+    return t >= s && t <= e;
+  });
+}
+
+/** 实际跨越的天数 = ceil((max - min) / day) + 1，至少为 1 */
+export function spanDays(orders: SalesOrder[]): number {
+  if (orders.length === 0) return 0;
+  const ts = orders.map((o) => +new Date(o.paidAt));
+  const min = Math.min(...ts);
+  const max = Math.max(...ts);
+  return Math.max(1, Math.floor((max - min) / 86400_000) + 1);
+}
+
+/**
+ * 按 bean × variant 聚合订单。
+ *  - 变动成本采用 packCost(includeLogistics) 即"含/不含物流"
+ *  - 平台佣金率取 state.sales.platformConfig.defaultFeeRate
+ *  - 营销按 GMV × ratios.marketingOfGmv
+ *  - 未映射的订单（specMapping.unmapped=true 或缺映射）会被跳过
+ */
+export function aggregateSales(
+  state: AppState,
+  orders: SalesOrder[],
+  includeLogistics: boolean,
+): { rows: SalesAggRow[]; unmappedCount: number; skipped: SalesOrder[] } {
+  const feeRate = state.sales.platformConfig.defaultFeeRate;
+  const mktRate = state.ratios.marketingOfGmv;
+  const mappingBySpec = new Map(state.sales.specMappings.map((m) => [m.specId, m]));
+
+  type Key = string;
+  const map = new Map<Key, { beanId: string; variantId: string; orderIds: Set<string>; q: number; gross: number; varCost: number }>();
+  const skipped: SalesOrder[] = [];
+
+  for (const o of orders) {
+    const m = mappingBySpec.get(o.specId);
+    if (!m || m.unmapped || !m.beanId || !m.variantId) {
+      skipped.push(o);
+      continue;
+    }
+    const bean = state.beans.find((b) => b.id === m.beanId);
+    const variant = bean?.variants.find((v) => v.id === m.variantId);
+    if (!bean || !variant) {
+      skipped.push(o);
+      continue;
+    }
+    const pc = packCost(state, bean, variant, includeLogistics);
+    const key = `${bean.id}__${variant.id}`;
+    let cell = map.get(key);
+    if (!cell) {
+      cell = { beanId: bean.id, variantId: variant.id, orderIds: new Set(), q: 0, gross: 0, varCost: 0 };
+      map.set(key, cell);
+    }
+    cell.orderIds.add(o.orderId);
+    cell.q += o.quantity;
+    cell.gross += o.grossAmount;
+    cell.varCost += pc.productionCost * o.quantity;
+  }
+
+  const rows: SalesAggRow[] = [];
+  for (const cell of map.values()) {
+    const bean = state.beans.find((b) => b.id === cell.beanId);
+    const variant = bean?.variants.find((v) => v.id === cell.variantId);
+    if (!bean || !variant) continue;
+    const netRev = cell.gross * (1 - feeRate);
+    const mkt = cell.gross * mktRate;
+    rows.push({
+      beanId: cell.beanId,
+      variantId: cell.variantId,
+      beanName: bean.name,
+      variantLabel: variantLabel(variant),
+      quantity: cell.q,
+      grossRevenue: cell.gross,
+      netRevenue: netRev,
+      unitPriceAvg: cell.q > 0 ? cell.gross / cell.q : 0,
+      variableCost: cell.varCost,
+      marketing: mkt,
+      grossProfit: netRev - cell.varCost - mkt,
+      orderCount: cell.orderIds.size,
+    });
+  }
+  // 排序：按豆子顺序 + 规格顺序
+  const beanOrder = new Map(state.beans.map((b, i) => [b.id, i]));
+  rows.sort((a, b) => {
+    const ba = beanOrder.get(a.beanId) ?? 999;
+    const bb = beanOrder.get(b.beanId) ?? 999;
+    if (ba !== bb) return ba - bb;
+    return a.variantLabel.localeCompare(b.variantLabel);
+  });
+  return { rows, unmappedCount: skipped.length, skipped };
+}
+
+/** 累计实销摘要 */
+export interface SalesSummary {
+  rows: SalesAggRow[];
+  totals: {
+    quantity: number;
+    grossRevenue: number;       // 累计 GMV
+    netRevenue: number;          // 扣平台佣金后
+    variableCost: number;
+    marketing: number;
+    grossProfit: number;         // = netRevenue - variableCost - marketing
+    // 运营摊销（两个口径）
+    operationByDays: number;     // 年度运营 × (销售天数/365)
+    operationByVolume: number;   // 年度运营 × (累计 kg / 当前情景产能 kg)
+    netProfitByDays: number;     // grossProfit - operationByDays
+    netProfitByVolume: number;   // grossProfit - operationByVolume
+  };
+  spanDays: number;
+  unmappedCount: number;
+}
+
+export function computeSalesSummary(
+  state: AppState,
+  orders: SalesOrder[],
+  includeLogistics: boolean,
+): SalesSummary {
+  const agg = aggregateSales(state, orders, includeLogistics);
+  const totalQ = agg.rows.reduce((s, r) => s + r.quantity, 0);
+  const totalGmv = agg.rows.reduce((s, r) => s + r.grossRevenue, 0);
+  const totalNet = agg.rows.reduce((s, r) => s + r.netRevenue, 0);
+  const totalVar = agg.rows.reduce((s, r) => s + r.variableCost, 0);
+  const totalMkt = agg.rows.reduce((s, r) => s + r.marketing, 0);
+  const grossProfit = totalNet - totalVar - totalMkt;
+
+  const opAnnual = annualOperationCost(state).total;
+  const days = spanDays(orders);
+  const operationByDays = days > 0 ? opAnnual * (days / 365) : 0;
+
+  // 累计已售熟豆 kg
+  const totalKg = agg.rows.reduce((s, r) => {
+    const bean = state.beans.find((b) => b.id === r.beanId);
+    const variant = bean?.variants.find((v) => v.id === r.variantId);
+    return s + (variant ? (variant.weightG * r.quantity) / 1000 : 0);
+  }, 0);
+  const sc = state.scenarios.find((x) => x.id === state.profitInputs.scenarioId);
+  const scKgYear = sc ? capacityKgPerYear(sc) : 0;
+  const operationByVolume = scKgYear > 0 ? opAnnual * (totalKg / scKgYear) : 0;
+
+  return {
+    rows: agg.rows,
+    totals: {
+      quantity: totalQ,
+      grossRevenue: totalGmv,
+      netRevenue: totalNet,
+      variableCost: totalVar,
+      marketing: totalMkt,
+      grossProfit,
+      operationByDays,
+      operationByVolume,
+      netProfitByDays: grossProfit - operationByDays,
+      netProfitByVolume: grossProfit - operationByVolume,
+    },
+    spanDays: days,
+    unmappedCount: agg.unmappedCount,
+  };
+}
+
+/** 跑速年化：取窗口内日均，× 365；运营成本扣全年 */
+export interface RunRateProjection {
+  windowOrders: number;
+  windowDays: number;
+  windowGmv: number;
+  windowQuantity: number;
+  dailyGmv: number;
+  dailyQuantity: number;
+  // 年化指标
+  annualGmv: number;
+  annualNetRevenue: number;
+  annualVariableCost: number;
+  annualMarketing: number;
+  annualGrossProfit: number;
+  annualOperation: number;       // 全年运营成本
+  annualNetProfit: number;
+  // 按豆款 × 规格的年化销量（袋）
+  perVariantAnnualQty: { beanId: string; variantId: string; beanName: string; variantLabel: string; annualQty: number; annualKg: number }[];
+}
+
+export function computeRunRate(
+  state: AppState,
+  orders: SalesOrder[],
+  includeLogistics: boolean,
+): RunRateProjection {
+  const days = spanDays(orders);
+  const safeDays = days || 1;
+  const agg = aggregateSales(state, orders, includeLogistics);
+  const winGmv = agg.rows.reduce((s, r) => s + r.grossRevenue, 0);
+  const winQ = agg.rows.reduce((s, r) => s + r.quantity, 0);
+  const winVar = agg.rows.reduce((s, r) => s + r.variableCost, 0);
+
+  const feeRate = state.sales.platformConfig.defaultFeeRate;
+  const mktRate = state.ratios.marketingOfGmv;
+
+  const dailyGmv = winGmv / safeDays;
+  const dailyQ = winQ / safeDays;
+
+  const annualGmv = dailyGmv * 365;
+  const annualNet = annualGmv * (1 - feeRate);
+  const annualVar = (winVar / safeDays) * 365;
+  const annualMkt = annualGmv * mktRate;
+  const annualGP = annualNet - annualVar - annualMkt;
+  const annualOp = annualOperationCost(state).total;
+
+  const perVariant = agg.rows.map((r) => {
+    const bean = state.beans.find((b) => b.id === r.beanId)!;
+    const variant = bean.variants.find((v) => v.id === r.variantId!)!;
+    const annualQty = (r.quantity / safeDays) * 365;
+    return {
+      beanId: r.beanId,
+      variantId: r.variantId!,
+      beanName: r.beanName,
+      variantLabel: r.variantLabel,
+      annualQty,
+      annualKg: (annualQty * variant.weightG) / 1000,
+    };
+  });
+
+  return {
+    windowOrders: orders.length,
+    windowDays: days,
+    windowGmv: winGmv,
+    windowQuantity: winQ,
+    dailyGmv,
+    dailyQuantity: dailyQ,
+    annualGmv,
+    annualNetRevenue: annualNet,
+    annualVariableCost: annualVar,
+    annualMarketing: annualMkt,
+    annualGrossProfit: annualGP,
+    annualOperation: annualOp,
+    annualNetProfit: annualGP - annualOp,
+    perVariantAnnualQty: perVariant,
+  };
+}
+
+/** 根据商品名/规格名启发式自动映射 specId → beanId+variantId */
+export function autoMatchSpec(
+  state: AppState,
+  productName: string,
+  specName: string,
+): { beanId: string | null; variantId: string | null } {
+  // 1. 匹配豆款：商品名里包含豆子 name
+  const bean = state.beans.find((b) => productName.includes(b.name) || specName.includes(b.name));
+  if (!bean) return { beanId: null, variantId: null };
+  // 2. 匹配规格：从规格名里找 "Ng" 数字 g
+  const m = specName.match(/(\d+)\s*g/i);
+  if (!m) return { beanId: bean.id, variantId: null };
+  const targetG = parseInt(m[1], 10);
+  const variant = bean.variants.find((v) => v.weightG === targetG);
+  return { beanId: bean.id, variantId: variant?.id ?? null };
+}
+

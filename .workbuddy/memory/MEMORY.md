@@ -70,3 +70,41 @@ _长期有效的项目背景与约定。更新时请就地改写，并在条目�
 - 4 款豆子预置：九尾(拼配) / 朏胐(拼配) / 精卫(SOE) / 鸾鸟(SOE)
 - 目前**不含礼盒**（按用户要求）
 
+**v0.2 迭代（2026-04-20 当日）**：
+- 生豆单价**每款豆子独立**（`Bean.greenPricePerKg`），Ratios 里两个全局值只作为"新建豆款"时的默认值
+- SKU 支持**"目标毛利→售价"和"手动售价→反推毛利"两种定价模式**，逐行切换
+- 规格 SKU 可任意增删复制，支持自定义 `label` 和任意克重（不限 110g/225g）
+- localStorage v1→v2 自动迁移（`migrate` in persist）
+- 单元测试扩充到 37 条断言，全部通过
+- Git 远程已切 SSH：`git@github.com:Llawliet1900/DHJ_Pricing.git`；本机已有 `~/.ssh/id_rsa`（RSA key，2025-08-15 生成）
+- GH Pages Settings → Source 选 "GitHub Actions"（**不是** Deploy from a branch），Actions workflow 已跑通
+
+**v0.3 迭代（2026-04-21）**：
+- `ProfitInputs.freeShipping?: boolean`，默认 true（兼容 v0.2 口径）。`packCost(state, bean, variant, includeLogistics=true)` 多加一个参数；`computeProfit` 内部：售价按"含物流成本"推（切换不动售价），不包邮时成本里扣物流
+- ProfitPage 顶部加包邮/不包邮 radio
+- `addBean` 改 unshift，新豆款插最上方
+- store 加 `moveCostItem` / `moveBean(id, dir=-1|1)` + `moveArr` helper；CostItemsPage 每行、BeansPage 卡片头都加了 ↑↓
+- 规格 SKU 表列宽加大：规格名 w-28→w-32、熟豆 w-20→w-24、本款占比 w-24→w-28
+- AuditPage 第 6 段下面加当前情景 SKU 年度盈亏快照表；第 7 段下面加 Break-even 数值表（固定成本 / 每 kg 贡献 / 保本年月销量 / 月 GMV）
+- 37/37 测试仍全绿；build 产物 255 kB / 77 kB gzip
+
+**v0.4 迭代（2026-05-26）— 实销分析页**：
+- 新 Tab「6. 实销分析」（盈利总览之后），整体放在 `src/pages/SalesPage.tsx`
+- 数据模型：`SalesOrder`（订单 SKU 行）、`SpecMapping`（规格ID→bean+variant）、`SalesState`（orders/mappings/platformConfig/analysis/importedFiles/salesStartDate）；store schema v2→v3 自动迁移
+- 订单 Excel 解析：`src/salesImport.ts`，依赖 `@e965/xlsx`（不用 `xlsx` 主包，npm 上版本带 high CVE）
+  - `parseOrderXlsx` 容错列名，支持 Excel 序号/字符串/Date 三种支付时间
+  - `extractRangeFromFilename` 从 `订单明细数据(YYYY-MM-DD~YYYY-MM-DD).xlsx` 抓时间区间
+  - `mergeOrders` 按 `orderId__specId` 去重，新覆盖旧 → **每月增量导入不丢历史数据**
+- 计算引擎（engine.ts）新增：`filterOrdersByWindow` / `spanDays` / `aggregateSales` / `computeSalesSummary` / `computeRunRate` / `autoMatchSpec`
+- 关键口径：
+  - GMV → 净收入（扣平台佣金，默认小红书 1%）→ 毛利（再扣变动成本+营销）→ 净利
+  - 累计运营摊销并列两口径：按天数（spanDays/365）+ 按销量（kg/scenarioKg）
+  - 跑速年化：窗口日均×365，扣**全年**运营成本
+- UI 五大模块：导入区（拖拽+多文件） / 平台配置 / 规格映射区（自动匹配+手动指认） / 4 张 KPI / 累计-跑速对照卡 / SKU 明细表 / 单袋实收价 SVG 折线图
+- 测试 62/62 全绿（37 + 25 sales 新增）；build 648 kB / 209 kB gzip（xlsx 占 ~400 kB；可后续 dynamic import 优化首屏）
+- 用户实测数据（2026-04-25~05-24 月度）：26 行 100% 解析；月 GMV ≈ ¥2,793.80；7 个规格 ID 全部自动映射到 4 款豆子 × 110g/225g
+
+**回复节流约定（2026-04-21 血的教训）**：
+- 单次消息改太多文件 / 读太多长文件会触发 10004（消息流中断）或 14003（模型资源超限）
+- 下次再做批量改动时，默认每条回复只动一个文件/一个点，不重复读长文件
+

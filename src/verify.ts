@@ -5,17 +5,23 @@
  */
 import { defaultState } from './seed';
 import {
+  aggregateSales,
   annualOperationCost,
+  autoMatchSpec,
   capacityKgPerYear,
   computeProfit,
+  computeRunRate,
+  computeSalesSummary,
+  filterOrdersByWindow,
   impliedMargin,
   packCost,
   rawGramsPerPack,
   resolveVariantPricing,
+  spanDays,
   suggestedPrice,
   weightedPlatformFee,
 } from './engine';
-import type { Bean, BeanVariant } from './types';
+import type { Bean, BeanVariant, SalesOrder, SpecMapping } from './types';
 
 let passed = 0;
 let failed = 0;
@@ -243,5 +249,116 @@ console.log('\n=== 13. Break-even 一致性 ===');
   assert('breakeven_kg 不随产能变', approxEq(r3.breakeven.kgPerYear, r.breakeven.kgPerYear, 1e-6));
 }
 
+console.log('\n=== 14. 实销分析 - 自动映射 ===');
+{
+  const s = defaultState;
+  const m1 = autoMatchSpec(s, '【大荒记】九尾 子夜 | 意式拼配 中深烘焙咖啡豆', '【大荒记】九尾 子夜 | 意式拼配 中深烘焙咖啡豆 110g');
+  assert('九尾110g → 命中', m1.beanId === 'bn_jiuwei' && m1.variantId !== null);
+  const m2 = autoMatchSpec(s, '【大荒记】精卫 衔果 | 精品咖啡豆 埃塞 手冲推荐', '【大荒记】精卫 衔果 | 精品咖啡豆 埃塞 手冲推荐 225g');
+  assert('精卫225g → 命中', m2.beanId === 'bn_jingwei' && m2.variantId !== null);
+  const m3 = autoMatchSpec(s, '某未知豆', '某未知豆 110g');
+  assert('未知豆 → 不命中', m3.beanId === null);
+}
+
+console.log('\n=== 15. 实销分析 - 时间窗口过滤 ===');
+{
+  const orders: SalesOrder[] = [
+    mkOrder('o1', 'spec_jw_110', '2026-05-01', 1, 53.65),
+    mkOrder('o2', 'spec_jw_110', '2026-05-15', 2, 107.77),
+    mkOrder('o3', 'spec_jw_110', '2026-05-24', 1, 53.65),
+  ];
+  const all = filterOrdersByWindow(orders, 'all', 0);
+  assert('all 模式返回全部', all.length === 3);
+  const last14 = filterOrdersByWindow(orders, 'days', 14);
+  assert('14 天窗口包含 o2/o3', last14.length === 2);
+  const last7 = filterOrdersByWindow(orders, 'days', 7);
+  assert('7 天窗口仅含 o3', last7.length === 1);
+  const sd = spanDays(orders);
+  assert('spanDays = 24', sd === 24);
+}
+
+console.log('\n=== 16. 实销分析 - 聚合与利润 ===');
+{
+  const s = defaultState;
+  const beanJw = s.beans.find((b) => b.id === 'bn_jiuwei')!;
+  const v110 = beanJw.variants.find((v) => v.weightG === 110)!;
+  const v225 = beanJw.variants.find((v) => v.weightG === 225)!;
+  const mappings: SpecMapping[] = [
+    { specId: 'spec_jw_110', beanId: 'bn_jiuwei', variantId: v110.id, unmapped: false, productName: '九尾', specName: '九尾 110g' },
+    { specId: 'spec_jw_225', beanId: 'bn_jiuwei', variantId: v225.id, unmapped: false, productName: '九尾', specName: '九尾 225g' },
+  ];
+  const orders: SalesOrder[] = [
+    mkOrder('o1', 'spec_jw_110', '2026-05-01', 1, 53.65),
+    mkOrder('o2', 'spec_jw_110', '2026-05-15', 2, 107.77),
+    mkOrder('o3', 'spec_jw_225', '2026-05-10', 1, 95.0),
+    mkOrder('o4', 'spec_unknown',  '2026-05-20', 1, 100.0),
+  ];
+  const sWithSales = { ...s, sales: { ...s.sales, specMappings: mappings } };
+  const agg = aggregateSales(sWithSales, orders, true);
+  assert('聚合后有 2 个 SKU', agg.rows.length === 2);
+  assert('未映射 = 1', agg.unmappedCount === 1);
+  const row110 = agg.rows.find((r) => r.variantId === v110.id)!;
+  assert('九尾110g 袋数 = 3', row110.quantity === 3);
+  assert('九尾110g GMV = 161.42', approxEq(row110.grossRevenue, 53.65 + 107.77, 1e-6));
+  assert('九尾110g 涉及订单数 = 2', row110.orderCount === 2);
+  assert('九尾110g 净收入 = GMV × 0.99', approxEq(row110.netRevenue, row110.grossRevenue * 0.99));
+
+  const summary = computeSalesSummary(sWithSales, orders, true);
+  assert('summary 累计 GMV 含已映射 SKU', approxEq(summary.totals.grossRevenue, 53.65 + 107.77 + 95.0));
+  // orders 包含 o1=05-01 / o2=05-15 / o3=05-10 / o4=05-20（未映射但仍参与时间跨度计算）
+  // min=05-01, max=05-20 → span = 20 天
+  assert('summary spanDays = 20', summary.spanDays === 20);
+  const expectedMkt = summary.totals.grossRevenue * s.ratios.marketingOfGmv;
+  assert('营销费 = GMV × marketingOfGmv', approxEq(summary.totals.marketing, expectedMkt));
+  assert(
+    'grossProfit = netRev - varCost - mkt',
+    approxEq(summary.totals.grossProfit, summary.totals.netRevenue - summary.totals.variableCost - summary.totals.marketing),
+  );
+  const opAnnual = annualOperationCost(sWithSales).total;
+  assert('运营按天数摊 = opAnnual × 20/365', approxEq(summary.totals.operationByDays, opAnnual * (20 / 365), 1e-3));
+}
+
+console.log('\n=== 17. 实销分析 - 跑速年化 ===');
+{
+  const s = defaultState;
+  const beanJw = s.beans.find((b) => b.id === 'bn_jiuwei')!;
+  const v110 = beanJw.variants.find((v) => v.weightG === 110)!;
+  const mappings: SpecMapping[] = [
+    { specId: 'spec_jw_110', beanId: 'bn_jiuwei', variantId: v110.id, unmapped: false, productName: '九尾', specName: '九尾 110g' },
+  ];
+  const orders: SalesOrder[] = [
+    mkOrder('o1', 'spec_jw_110', '2026-05-01', 1, 53.65),
+    mkOrder('o2', 'spec_jw_110', '2026-05-15', 2, 107.77),
+    mkOrder('o3', 'spec_jw_110', '2026-05-24', 1, 53.65),
+  ];
+  const sWithSales = { ...s, sales: { ...s.sales, specMappings: mappings } };
+  const rr = computeRunRate(sWithSales, orders, true);
+  const expectedDaily = (53.65 + 107.77 + 53.65) / 24;
+  assert('日均 GMV 正确', approxEq(rr.dailyGmv, expectedDaily, 1e-6));
+  assert('年化 GMV = 日均 × 365', approxEq(rr.annualGmv, expectedDaily * 365, 1e-6));
+  assert('年化运营 = 全年运营', approxEq(rr.annualOperation, annualOperationCost(sWithSales).total));
+  assert('年化净利润 = 毛利 - 全年运营', approxEq(rr.annualNetProfit, rr.annualGrossProfit - rr.annualOperation));
+  assert('perVariant 有 1 项', rr.perVariantAnnualQty.length === 1);
+  const pv = rr.perVariantAnnualQty[0];
+  assert('年化袋数 = 4/24 × 365', approxEq(pv.annualQty, (4 / 24) * 365, 1e-6));
+  assert('年化 kg 与年化袋数一致', approxEq(pv.annualKg, (pv.annualQty * 110) / 1000));
+}
+
 console.log(`\n===== Total: ${passed} passed / ${failed} failed =====`);
 if (failed > 0) process.exit(1);
+
+// ============ Sales 测试辅助 ============
+function mkOrder(orderId: string, specId: string, paidAt: string, quantity: number, grossAmount: number): SalesOrder {
+  return {
+    id: `s_${orderId}_${specId}`,
+    orderId,
+    specId,
+    paidAt: paidAt + 'T12:00:00',
+    productName: 'mock',
+    specName: 'mock',
+    quantity,
+    grossAmount,
+    source: 'test',
+    importedAt: new Date().toISOString(),
+  };
+}

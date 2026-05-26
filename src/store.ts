@@ -10,6 +10,10 @@ import type {
   Ratios,
   ProfitInputs,
   BeanPackaging,
+  SalesOrder,
+  SpecMapping,
+  SalesAnalysisInputs,
+  SalesPlatformConfig,
 } from './types';
 import { defaultState, uid, DEFAULT_PACKAGING } from './seed';
 
@@ -52,6 +56,14 @@ interface Actions {
 
   // 全局
   setDefaultLogistics: (id: string | null) => void;
+
+  // 实销分析
+  importSalesOrders: (incoming: SalesOrder[], fileMeta: { name: string; rangeStart?: string; rangeEnd?: string; rows: number }) => { added: number; duplicates: number };
+  clearSalesOrders: () => void;
+  upsertSpecMappings: (mappings: SpecMapping[]) => void;
+  updateSpecMapping: (specId: string, patch: Partial<SpecMapping>) => void;
+  updateSalesAnalysis: (patch: Partial<SalesAnalysisInputs>) => void;
+  updateSalesPlatform: (patch: Partial<SalesPlatformConfig>) => void;
 
   // 导入导出
   exportJson: () => string;
@@ -261,6 +273,103 @@ export const useStore = create<Store>()(
       setDefaultLogistics: (id) =>
         set((s) => ({ defaultLogisticsCostItemId: id, meta: bumpMeta(s) })),
 
+      // ========== 实销分析 ==========
+      importSalesOrders: (incoming, fileMeta) => {
+        let added = 0;
+        let duplicates = 0;
+        set((s) => {
+          const existing = s.sales.orders;
+          const keyOf = (o: SalesOrder) => `${o.orderId}__${o.specId}`;
+          const map = new Map<string, SalesOrder>();
+          for (const o of existing) map.set(keyOf(o), o);
+          for (const o of incoming) {
+            const k = keyOf(o);
+            if (map.has(k)) duplicates++;
+            else added++;
+            map.set(k, o);
+          }
+          const merged = Array.from(map.values()).sort(
+            (a, b) => +new Date(a.paidAt) - +new Date(b.paidAt),
+          );
+
+          // 自动建立 specMappings：新出现的 specId 尝试自动匹配
+          const knownSpecIds = new Set(s.sales.specMappings.map((m) => m.specId));
+          const newSpecIds = new Map<string, { productName: string; specName: string }>();
+          for (const o of incoming) {
+            if (!knownSpecIds.has(o.specId) && !newSpecIds.has(o.specId)) {
+              newSpecIds.set(o.specId, { productName: o.productName, specName: o.specName });
+            }
+          }
+          const newMappings: SpecMapping[] = [];
+          for (const [specId, meta] of newSpecIds) {
+            const matched = autoMatchInline(s.beans, meta.productName, meta.specName);
+            newMappings.push({
+              specId,
+              beanId: matched.beanId,
+              variantId: matched.variantId,
+              unmapped: !matched.beanId || !matched.variantId,
+              productName: meta.productName,
+              specName: meta.specName,
+            });
+          }
+
+          // salesStartDate = min(paidAt) across all orders
+          const allDates = merged.map((o) => o.paidAt);
+          const salesStartDate = allDates.length > 0 ? allDates[0].slice(0, 10) : undefined;
+
+          // 文件登记
+          const importedFiles = [
+            ...s.sales.importedFiles.filter((f) => f.name !== fileMeta.name),
+            {
+              name: fileMeta.name,
+              rangeStart: fileMeta.rangeStart,
+              rangeEnd: fileMeta.rangeEnd,
+              rows: fileMeta.rows,
+              importedAt: new Date().toISOString(),
+            },
+          ];
+
+          return {
+            sales: {
+              ...s.sales,
+              orders: merged,
+              specMappings: [...s.sales.specMappings, ...newMappings],
+              importedFiles,
+              salesStartDate,
+            },
+            meta: bumpMeta(s),
+          };
+        });
+        return { added, duplicates };
+      },
+      clearSalesOrders: () =>
+        set((s) => ({
+          sales: { ...s.sales, orders: [], importedFiles: [], salesStartDate: undefined },
+          meta: bumpMeta(s),
+        })),
+      upsertSpecMappings: (mappings) =>
+        set((s) => {
+          const map = new Map(s.sales.specMappings.map((m) => [m.specId, m]));
+          for (const m of mappings) map.set(m.specId, m);
+          return { sales: { ...s.sales, specMappings: Array.from(map.values()) }, meta: bumpMeta(s) };
+        }),
+      updateSpecMapping: (specId, patch) =>
+        set((s) => ({
+          sales: {
+            ...s.sales,
+            specMappings: s.sales.specMappings.map((m) =>
+              m.specId === specId
+                ? { ...m, ...patch, unmapped: !(patch.beanId ?? m.beanId) || !(patch.variantId ?? m.variantId) }
+                : m,
+            ),
+          },
+          meta: bumpMeta(s),
+        })),
+      updateSalesAnalysis: (patch) =>
+        set((s) => ({ sales: { ...s.sales, analysis: { ...s.sales.analysis, ...patch } }, meta: bumpMeta(s) })),
+      updateSalesPlatform: (patch) =>
+        set((s) => ({ sales: { ...s.sales, platformConfig: { ...s.sales.platformConfig, ...patch } }, meta: bumpMeta(s) })),
+
       // ========== 导入导出 ==========
       exportJson: () => {
         const { costItems, ratios, platforms, scenarios, beans, profitInputs, defaultLogisticsCostItemId, meta } = get();
@@ -297,20 +406,33 @@ export const useStore = create<Store>()(
     }),
     {
       name: 'dhj-cost-calc',
-      version: 2,
-      // 老版本（v1）localStorage 数据迁移：豆子没有 greenPricePerKg
+      version: 3,
+      // 老版本 localStorage 数据迁移
+      //  v1 → v2: 豆子没有 greenPricePerKg，从 costItems 取
+      //  v2 → v3: 增加 sales 字段（实销分析）
       migrate: (persistedState: unknown, version: number): Store => {
         const state = persistedState as AppState;
         if (!state) return defaultState as Store;
+        let next = state as Store;
         if (version < 2) {
-          const beans = (state.beans ?? []).map((b) => migrateBean(b, state.costItems ?? []));
-          return {
-            ...(state as Store),
+          const beans = (next.beans ?? []).map((b) => migrateBean(b, next.costItems ?? []));
+          next = {
+            ...next,
             beans,
-            meta: { ...(state.meta ?? defaultState.meta), version: 2 },
+            meta: { ...(next.meta ?? defaultState.meta), version: 2 },
           };
         }
-        return state as Store;
+        if (version < 3) {
+          // 没有 sales 字段的老数据，注入默认 sales
+          if (!(next as Partial<AppState>).sales) {
+            next = {
+              ...next,
+              sales: defaultState.sales,
+              meta: { ...(next.meta ?? defaultState.meta), version: 3 },
+            };
+          }
+        }
+        return next;
       },
     },
   ),
@@ -345,4 +467,19 @@ function moveArr<T extends { id: string }>(arr: T[], id: string, dir: -1 | 1): T
   const [item] = next.splice(idx, 1);
   next.splice(target, 0, item);
   return next;
+}
+
+/** 启发式匹配 specId → bean+variant；与 engine.autoMatchSpec 同逻辑，避免 store→engine 循环依赖 */
+function autoMatchInline(
+  beans: Bean[],
+  productName: string,
+  specName: string,
+): { beanId: string | null; variantId: string | null } {
+  const bean = beans.find((b) => productName.includes(b.name) || specName.includes(b.name));
+  if (!bean) return { beanId: null, variantId: null };
+  const m = specName.match(/(\d+)\s*g/i);
+  if (!m) return { beanId: bean.id, variantId: null };
+  const targetG = parseInt(m[1], 10);
+  const variant = bean.variants.find((v) => v.weightG === targetG);
+  return { beanId: bean.id, variantId: variant?.id ?? null };
 }
