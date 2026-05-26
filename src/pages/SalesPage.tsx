@@ -575,7 +575,7 @@ function AnalysisSection({ state, analysis, onChangeAnalysis }: AnalysisProps) {
       </div>
 
       {/* ---- 单袋实收价 时间折线图 ---- */}
-      <PriceTrendChart orders={orders} mappings={state.sales.specMappings} platformFee={state.sales.platformConfig.defaultFeeRate} />
+      <PriceTrendChart orders={orders} mappings={state.sales.specMappings} beans={state.beans} platformFee={state.sales.platformConfig.defaultFeeRate} />
     </>
   );
 }
@@ -729,12 +729,51 @@ function Row({
 function PriceTrendChart({
   orders,
   mappings,
+  beans,
   platformFee,
 }: {
   orders: SalesOrder[];
   mappings: ReturnType<typeof useStore.getState>['sales']['specMappings'];
+  beans: ReturnType<typeof useStore.getState>['beans'];
   platformFee: number;
 }) {
+  // ============ 独立时间窗口（不跟随上方分析参数） ============
+  type WinMode = 'all' | 'days' | 'custom';
+  const [winMode, setWinMode] = useState<WinMode>('all');
+  const [winDays, setWinDays] = useState<number>(14);
+  const [winStart, setWinStart] = useState<string>('');
+  const [winEnd, setWinEnd] = useState<string>('');
+  // tooltip hover 状态
+  const [hover, setHover] = useState<{
+    name: string; color: string; t: number; price: number; netPrice: number;
+    orderCount: number; bagCount: number; cx: number; cy: number;
+  } | null>(null);
+
+  // 过滤订单到窗口
+  const filteredOrders = (() => {
+    if (orders.length === 0) return orders;
+    if (winMode === 'all') return orders;
+    if (winMode === 'days') {
+      const maxT = Math.max(...orders.map((o) => +new Date(o.paidAt)));
+      const cutoff = maxT - (winDays - 1) * 86400_000;
+      return orders.filter((o) => +new Date(o.paidAt) >= cutoff);
+    }
+    const s = winStart ? +new Date(winStart) : -Infinity;
+    const e = winEnd ? +new Date(winEnd) + 86400_000 - 1 : Infinity;
+    return orders.filter((o) => {
+      const t = +new Date(o.paidAt);
+      return t >= s && t <= e;
+    });
+  })();
+
+  // 豆款简写工具
+  const beanById = new Map(beans.map((b) => [b.id, b]));
+  const shortName = (beanId: string, weightG: number, fallback: string): string => {
+    const bean = beanById.get(beanId);
+    if (bean && weightG > 0) return `${bean.name}-${weightG}`;
+    return fallback;
+  };
+
   // 仅取已映射的订单；按 (beanId+variantId) 分组
   const mapBySpec = new Map(mappings.map((m) => [m.specId, m]));
   type Pt = { t: number; pricePerPack: number; netPerPack: number; orderCount: number; bagCount: number };
@@ -749,7 +788,7 @@ function PriceTrendChart({
   };
   const groups = new Map<string, Group>();
 
-  for (const o of orders) {
+  for (const o of filteredOrders) {
     const m = mapBySpec.get(o.specId);
     if (!m || m.unmapped) continue;
     const key = `${m.beanId}__${m.variantId}`;
@@ -757,10 +796,11 @@ function PriceTrendChart({
     if (!g) {
       const weightMatch = m.specName.match(/(\d+)\s*g/i);
       const weightG = weightMatch ? parseInt(weightMatch[1], 10) : 0;
+      const fallback = `${m.productName.slice(0, 12)} · ${m.specName.match(/(\d+\s*g)/)?.[1] ?? ''}`;
       g = {
         beanId: m.beanId ?? '',
         variantId: m.variantId ?? '',
-        name: `${m.productName.slice(0, 12)} · ${m.specName.match(/(\d+\s*g)/)?.[1] ?? ''}`,
+        name: shortName(m.beanId ?? '', weightG, fallback),
         weightG,
         pts: [],
         daily: new Map(),
@@ -791,7 +831,7 @@ function PriceTrendChart({
     g.pts.sort((a, b) => a.t - b.t);
   }
 
-  if (groups.size === 0) {
+  if (orders.length === 0) {
     return (
       <div className="card p-4 text-sm text-slate-400 text-center">
         无可绘制的价格趋势（暂无已映射订单）
@@ -828,7 +868,7 @@ function PriceTrendChart({
     return palette[idx % palette.length] ?? palette[0];
   };
 
-  // 计算 x/y 范围
+  // 计算 x/y 范围（窗口可能为空 → 给安全默认值）
   let tMin = Infinity;
   let tMax = -Infinity;
   let yMin = Infinity;
@@ -840,6 +880,14 @@ function PriceTrendChart({
       if (p.pricePerPack < yMin) yMin = p.pricePerPack;
       if (p.pricePerPack > yMax) yMax = p.pricePerPack;
     }
+  }
+  if (!Number.isFinite(tMin)) {
+    // 当前窗口内无数据：用所有订单的范围占位
+    const allTs = orders.map((o) => +new Date(o.paidAt));
+    tMin = Math.min(...allTs);
+    tMax = Math.max(...allTs);
+    yMin = 0;
+    yMax = 100;
   }
   if (tMin === tMax) tMax = tMin + 86400_000;
   if (yMin === yMax) yMax = yMin + 10;
@@ -882,9 +930,50 @@ function PriceTrendChart({
 
   return (
     <div className="card p-4">
-      <div className="font-medium mb-2">📉 单袋实收价时间趋势</div>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+        <div className="font-medium">📉 单袋实收价时间趋势</div>
+        {/* 独立时间窗口控制（仅作用于本图） */}
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-slate-500">图表区间：</span>
+          <select
+            className="border rounded px-2 py-1"
+            value={winMode}
+            onChange={(e) => setWinMode(e.target.value as WinMode)}
+          >
+            <option value="all">全部历史</option>
+            <option value="days">最近 N 天</option>
+            <option value="custom">自定义</option>
+          </select>
+          {winMode === 'days' && (
+            <input
+              type="number"
+              min={1}
+              className="border rounded px-2 py-1 w-16 text-right"
+              value={winDays}
+              onChange={(ev) => setWinDays(parseInt(ev.target.value, 10) || 14)}
+            />
+          )}
+          {winMode === 'custom' && (
+            <>
+              <input
+                type="date"
+                className="border rounded px-2 py-1"
+                value={winStart}
+                onChange={(ev) => setWinStart(ev.target.value)}
+              />
+              <span>~</span>
+              <input
+                type="date"
+                className="border rounded px-2 py-1"
+                value={winEnd}
+                onChange={(ev) => setWinEnd(ev.target.value)}
+              />
+            </>
+          )}
+        </div>
+      </div>
       <div className="text-xs text-slate-500 mb-3">
-        每个点代表「该 SKU 在该日」的加权均价（= 当日 ΣGMV ÷ Σ袋数）。同款豆的不同规格用同色系深浅区分。
+        每个点代表「该 SKU 在该日」的加权均价（= 当日 ΣGMV ÷ Σ袋数）。同款豆的不同规格用同色系深浅区分。鼠标悬停查看详情。
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxWidth: '100%' }}>
         {/* 网格 + y 轴刻度 */}
@@ -912,16 +1001,83 @@ function PriceTrendChart({
           return (
             <g key={`${g.beanId}_${g.variantId}`}>
               <path d={d} fill="none" stroke={color} strokeWidth={1.5} opacity={0.85} />
-              {g.pts.map((p, i) => (
-                <circle key={i} cx={x(p.t)} cy={y(p.pricePerPack)} r={3.5} fill={color}>
-                  <title>
-                    {`${g.name}\n${new Date(p.t).toLocaleDateString()}\n当日均价 ¥${p.pricePerPack.toFixed(2)} / 扣佣 ¥${p.netPerPack.toFixed(2)}\n${p.orderCount} 单 / ${p.bagCount} 袋`}
-                  </title>
-                </circle>
-              ))}
+              {g.pts.map((p, i) => {
+                const cx = x(p.t);
+                const cy = y(p.pricePerPack);
+                const isHover =
+                  hover &&
+                  hover.name === g.name &&
+                  hover.t === p.t &&
+                  Math.abs(hover.cx - cx) < 0.5;
+                return (
+                  <circle
+                    key={i}
+                    cx={cx}
+                    cy={cy}
+                    r={isHover ? 5.5 : 3.5}
+                    fill={color}
+                    stroke={isHover ? '#fff' : 'none'}
+                    strokeWidth={isHover ? 2 : 0}
+                    style={{ cursor: 'pointer' }}
+                    onMouseEnter={() =>
+                      setHover({
+                        name: g.name,
+                        color,
+                        t: p.t,
+                        price: p.pricePerPack,
+                        netPrice: p.netPerPack,
+                        orderCount: p.orderCount,
+                        bagCount: p.bagCount,
+                        cx,
+                        cy,
+                      })
+                    }
+                    onMouseLeave={() => setHover(null)}
+                  />
+                );
+              })}
             </g>
           );
         })}
+        {/* tooltip */}
+        {hover && (() => {
+          const TIP_W = 190;
+          const TIP_H = 86;
+          let tipX = hover.cx + 12;
+          if (tipX + TIP_W > W - 4) tipX = hover.cx - TIP_W - 12;
+          let tipY = hover.cy - TIP_H - 8;
+          if (tipY < padT) tipY = hover.cy + 14;
+          const fmtFullDate = (t: number) => {
+            const d = new Date(t);
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          };
+          return (
+            <g pointerEvents="none">
+              <rect
+                x={tipX}
+                y={tipY}
+                width={TIP_W}
+                height={TIP_H}
+                rx={6}
+                fill="#0f172a"
+                opacity={0.92}
+              />
+              <circle cx={tipX + 12} cy={tipY + 16} r={4} fill={hover.color} />
+              <text x={tipX + 22} y={tipY + 19} fontSize="12" fill="#f8fafc" fontWeight={600}>
+                {hover.name}
+              </text>
+              <text x={tipX + 12} y={tipY + 34} fontSize="10" fill="#cbd5e1">
+                {fmtFullDate(hover.t)}
+              </text>
+              <text x={tipX + 12} y={tipY + 50} fontSize="11" fill="#fef3c7">
+                实收价 ¥{hover.price.toFixed(2)} · 扣佣 ¥{hover.netPrice.toFixed(2)}
+              </text>
+              <text x={tipX + 12} y={tipY + 66} fontSize="10" fill="#94a3b8">
+                {hover.orderCount} 单 / {hover.bagCount} 袋
+              </text>
+            </g>
+          );
+        })()}
       </svg>
       {/* 图例 */}
       <div className="flex flex-wrap gap-3 mt-2 text-xs">
