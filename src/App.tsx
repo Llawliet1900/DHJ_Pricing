@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import PasswordGate, { useAuth } from './components/PasswordGate';
+import { useEffect, useRef, useState } from 'react';
+import PasswordGate from './components/PasswordGate';
 import CostItemsPage from './pages/CostItemsPage';
 import RatiosPage from './pages/RatiosPage';
 import CapacityPage from './pages/CapacityPage';
@@ -7,7 +7,8 @@ import BeansPage from './pages/BeansPage';
 import ProfitPage from './pages/ProfitPage';
 import SalesPage from './pages/SalesPage';
 import AuditPage from './pages/AuditPage';
-import { useStore } from './store';
+import { loadPublishedPricing, useStore } from './store';
+import type { TeamPricingSession } from './teamPricing';
 
 type TabKey = 'cost' | 'ratio' | 'cap' | 'beans' | 'profit' | 'sales' | 'audit';
 
@@ -22,17 +23,35 @@ const TABS: { key: TabKey; label: string }[] = [
 ];
 
 export default function App() {
-  const { unlocked, setUnlocked } = useAuth();
-  if (!unlocked) return <PasswordGate onUnlock={() => setUnlocked(true)} />;
-  return <Main />;
+  const [session, setSession] = useState<TeamPricingSession | null>(null);
+  if (!session) return <PasswordGate onUnlock={(unlocked) => {
+    loadPublishedPricing(unlocked.publishedState);
+    setSession(unlocked);
+  }} />;
+  return <Main session={session} />;
 }
 
-function Main() {
+function Main({ session }: { session: TeamPricingSession }) {
   const [tab, setTab] = useState<TabKey>('cost');
+  const [draftWarning, setDraftWarning] = useState(session.draftWarning);
+  const [previousDraft, setPreviousDraft] = useState(session.previousDraft);
   const fileRef = useRef<HTMLInputElement>(null);
   const exportJson = useStore((s) => s.exportJson);
   const importJson = useStore((s) => s.importJson);
   const resetToDefault = useStore((s) => s.resetToDefault);
+
+  useEffect(() => useStore.subscribe((state) => {
+    void session.saveDraft(state.exportJson()).catch(() => {
+      setDraftWarning('本机草稿保存失败，可以导出 JSON 备份。');
+    });
+  }), [session]);
+
+  function restoreDraft() {
+    if (!previousDraft || !confirm('打开上次保存的本机草稿？这会替换当前页面的数据。')) return;
+    const result = importJson(previousDraft);
+    if (result.ok) setPreviousDraft(null);
+    else alert('草稿打开失败：' + result.message);
+  }
 
   function handleExport() {
     const text = exportJson();
@@ -62,7 +81,7 @@ function Main() {
   return (
     <div className="min-h-screen">
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-4">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center flex-wrap gap-4">
           <h1 className="font-semibold">☕ DHJ 咖啡成本 &amp; 定价核算</h1>
           <nav className="flex gap-1 flex-wrap">
             {TABS.map((t) => (
@@ -77,21 +96,23 @@ function Main() {
               </button>
             ))}
           </nav>
-          <div className="ml-auto flex gap-2">
+          <div className="ml-auto flex flex-wrap gap-2">
+            {previousDraft && <button className="dhj dhj-ghost" onClick={restoreDraft}>打开本机草稿</button>}
             <button className="dhj dhj-ghost" onClick={handleExport}>导出 JSON</button>
             <button className="dhj dhj-ghost" onClick={() => fileRef.current?.click()}>导入 JSON</button>
             <input ref={fileRef} type="file" accept="application/json" onChange={handleImport} hidden />
             <button
               className="dhj dhj-danger"
               onClick={() => {
-                if (confirm('确定要重置为默认数据？当前的所有修改会丢失。建议先导出备份。')) resetToDefault();
+                if (confirm('确定要恢复为团队发布版？建议先导出当前数据。')) resetToDefault();
               }}
-            >重置默认</button>
+            >恢复团队版</button>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto p-4">
+        {draftWarning && <p role="status" className="text-sm text-amber-700 mb-3">{draftWarning}</p>}
         {tab === 'cost' && <CostItemsPage />}
         {tab === 'ratio' && <RatiosPage />}
         {tab === 'cap' && <CapacityPage />}
@@ -102,7 +123,7 @@ function Main() {
       </main>
 
       <footer className="max-w-7xl mx-auto p-4 text-center text-xs text-slate-400">
-        数据保存在本地浏览器 localStorage；清缓存前记得导出 JSON 备份。
+        团队发布版 {session.publishedState.meta.updatedAt.slice(0, 10)}。修改仅保存为此浏览器的加密草稿。
       </footer>
     </div>
   );

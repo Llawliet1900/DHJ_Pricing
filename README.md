@@ -1,6 +1,6 @@
 # ☕ DHJ 咖啡成本 & 定价核算
 
-一个纯前端的咖啡品牌「成本核算 + 定价建议 + 盈利预测」工具。所有数据保存在你自己的浏览器里，不联网、不回传。
+一个纯前端的咖啡品牌「成本核算 + 定价建议 + 盈利预测」工具。用团队访问密钥解锁最新发布的定价数据。网页上的修改以加密草稿形式留在当前浏览器。
 
 在线访问（部署后）：`https://llawliet1900.github.io/DHJ_Pricing/`
 
@@ -17,7 +17,7 @@
 
 附加：
 - 数据导入 / 导出 JSON，用于备份与迁移
-- 前端密码门保护（见下文）
+- 团队访问密钥解锁共享定价
 
 ---
 
@@ -65,46 +65,25 @@ Node 版本 >= 20。
 
 项目已附带 GitHub Actions workflow（`.github/workflows/deploy.yml`），push 到 `main` 分支会自动构建并部署。
 
-### 初次部署步骤
+### 发布团队定价
 
-1. 在 GitHub 仓库设置里：**Settings → Pages → Build and deployment → Source** 选 **GitHub Actions**
-2. （可选但强烈建议）设置自定义密码：
-   - 本地执行 `echo -n 'your-new-password' | shasum -a 256`，拿到 64 位十六进制 hash
-   - 在 GitHub 仓库 **Settings → Secrets and variables → Actions → New repository secret** 里新建
-   - Name: `VITE_PASSWORD_HASH`
-   - Secret: 上面生成的 hash
-3. `git push origin main`，等 Actions 跑完即可访问
-
-### 修改密码
-
-重新生成 hash，更新仓库 Secret，然后 push 一个空提交即可触发重新构建：
+1. 在网页上导出完整的核算 JSON。
+2. 在仓库目录运行以下命令，按提示输入现有团队访问密钥。把未加密的来源文件放在仓库目录之外。
 
 ```bash
-git commit --allow-empty -m "rotate password"
-git push
+python3 -c 'import getpass; print(getpass.getpass("团队访问密钥: "))' |
+  node scripts/seal-team-pricing.mjs /path/to/pricing-export.json public/team-pricing.encrypted.json
 ```
 
----
+3. 提交加密文件到 `main`，等待 GitHub Pages 部署。团队成员打开网页并输入访问密钥后，默认加载本次发布的数据。
+4. 密钥只通过团队内部渠道分发。原有的 `VITE_PASSWORD_HASH` 设置已不再参与解锁。
 
-## 密码保护说明
-
-- 使用「前端密码门」：进入时输入密码，浏览器侧 SHA-256 比对
-- **默认密码 `dhj123`**（哈希 `6a37392241fa629e32bc7e1b711623d609a93dc9aa3d9b273b480b85ccae991c`）
-- 首次部署后请立刻按上面的步骤修改为自己的密码
-- 安全性：这是"展示层门禁"，可以挡住偶然访问，但无法防专业技术人员。成本核算表属于商业敏感数据；如果你要求更强防护，建议：
-  - 把仓库改为 private（需要 GitHub Pro 账号才能 private + Pages）
-  - 或者切到 Vercel / Cloudflare Pages 使用它们的原生密码保护
-
----
+团队访问密钥为随机 256 位密钥。仓库和网页分发 AES-256-GCM 加密后的文件，浏览器用输入的密钥解密。更换密钥前，请导出需要保留的本机草稿，并用新密钥重新加密并发布数据。持有原密钥的人仍可以解密他们已取得的旧版加密文件。
 
 ## 数据备份
 
-- 所有数据保存在浏览器 `localStorage` (`dhj-cost-calc` 键)
-- 在页面右上角可「导出 JSON」「导入 JSON」
-- 清浏览器缓存前记得先导出备份
-- 换设备也是用 JSON 文件迁移
-
----
+- 网页上的修改会作为加密草稿保存在当前浏览器。再次打开时默认显示团队发布版，可通过「打开本机草稿」恢复上次的编辑。
+- 可在页面右上角导入或导出 JSON。清浏览器缓存或换设备前请先导出备份。
 
 ## 技术栈
 
